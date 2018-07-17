@@ -101,6 +101,36 @@ module Topic : sig
     val of_string : string -> t option
   end
 
+  module Perf : sig
+    type t =
+      (** Hardware *)
+      | Cycles
+      | Instructions
+      | Cache_references
+      | Cache_misses
+      | Branch_instructions
+      | Branch_misses
+      | Bus_cycles
+      | Stalled_cycles_frontend
+      | Stalled_cycles_backend
+      | Ref_cpu_cycles
+      (** Software *)
+      | Cpu_clock
+      | Task_clock
+      | Page_faults
+      | Context_switches
+      | Cpu_migrations
+      | Page_faults_min
+      | Page_faults_maj
+      | Alignment_faults
+      | Emulation_faults
+      | Dummy
+
+    val of_string_exn : string -> t
+    val of_string : string -> t option
+    val to_string : t -> string
+  end
+
   module Size: sig
     type t =
       | Full
@@ -119,7 +149,7 @@ module Topic : sig
     | Gc : Gc.t kind
 
     (** Use the perf-stat(1) command or ocaml-libperf *)
-    | Perf : string kind
+    | Perf : Perf.t kind
 
     (** The executable size *)
     | Size : Size.t kind

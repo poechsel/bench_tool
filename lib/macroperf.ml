@@ -73,7 +73,7 @@ module Util = struct
               (match glob with
                | None -> loop (n'::acc)
                | Some pat ->
-                   let re = Re_glob.globx ~anchored:true pat |> Re.compile in
+                   let re = Re.Glob.globx ~anchored:true pat |> Re.compile in
                    if Re.execp re n then loop (n'::acc) else loop acc)
           | _ -> loop acc
           | exception End_of_file ->
@@ -208,10 +208,11 @@ module Util = struct
   module Opam = struct
     include FS
     let root = try Unix.getenv "OPAMROOT" with Not_found -> home / ".opam"
+    let exe = "OPAMROOT=~/.opam2 ~/.opam/4.07.0/lib/opam-devel/opam"
 
     let call_opam ~opamroot args =
       let root = Opt.default root opamroot in
-      let cmd = String.concat " " (List.map String.escaped ("opam"::args)) in
+      let cmd = String.concat " " (List.map String.escaped (exe::args)) in
       let res, result = Cmd.lines_of_cmd cmd in
       match res with
       | WEXITED code -> (code = 0), result
@@ -228,7 +229,7 @@ module Util = struct
       | false, _ -> failwith "Switch list query failed"
 
     let switches_matching ?opamroot glob =
-      let re = Re_glob.globx ~anchored:true glob |> Re.compile in
+      let re = Re.Glob.globx ~anchored:true glob |> Re.compile in
       List.filter (fun s -> Re.execp re s) (switches ~opamroot)
 
     let share ?opamroot s =
@@ -318,6 +319,88 @@ module Topic = struct
 
   module GcSet = Set.Make(Gc)
 
+  module Perf = struct
+    type t =
+      (** Hardware *)
+      | Cycles
+      | Instructions
+      | Cache_references
+      | Cache_misses
+      | Branch_instructions
+      | Branch_misses
+      | Bus_cycles
+      | Stalled_cycles_frontend
+      | Stalled_cycles_backend
+      | Ref_cpu_cycles
+      (** Software *)
+      | Cpu_clock
+      | Task_clock
+      | Page_faults
+      | Context_switches
+      | Cpu_migrations
+      | Page_faults_min
+      | Page_faults_maj
+      | Alignment_faults
+      | Emulation_faults
+      | Dummy
+    [@@deriving sexp]
+
+    let to_string = function
+      | Cycles -> "cycles"
+      | Instructions -> "instructions"
+      | Cache_references -> "cache_references"
+      | Cache_misses -> "cache_misses"
+      | Branch_instructions -> "branch_instructions"
+      | Branch_misses -> "branch_misses"
+      | Bus_cycles -> "bus_cycles"
+      | Stalled_cycles_frontend -> "stalled_cycles_frontend"
+      | Stalled_cycles_backend -> "stalled_cycles_backend"
+      | Ref_cpu_cycles -> "ref_cpu_cycles"
+
+      (** Software *)
+      | Cpu_clock -> "cpu_clock"
+      | Task_clock -> "task-clock"
+      | Page_faults -> "page_faults"
+      | Context_switches -> "context_switches"
+      | Cpu_migrations -> "cpu_migrations"
+      | Page_faults_min -> "page_faults_min"
+      | Page_faults_maj -> "page_faults_maj"
+      | Alignment_faults -> "alignment_faults"
+      | Emulation_faults -> "emulation_faults"
+      | Dummy -> "dummy"
+
+    let of_string_exn  s =
+
+      match s with
+      | "cycles" -> let _ = Printf.printf "yes\n" in Cycles
+      | "instructions" -> Instructions
+      | "cache_references" -> Cache_references
+      | "cache_misses" -> Cache_misses
+      | "branch_instructions" -> Branch_instructions
+      | "branch_misses" -> Branch_misses
+      | "bus_cycles" -> Bus_cycles
+      | "stalled_cycles_frontend" -> Stalled_cycles_frontend
+      | "stalled_cycles_backend" -> Stalled_cycles_backend
+      | "ref_cpu_cycles" -> Ref_cpu_cycles
+      (** Software *)
+      | "cpu_clock" -> Cpu_clock
+      | "task-clock" -> Task_clock
+      | "page_faults" -> Page_faults
+      | "context_switches" -> Context_switches
+      | "cpu_migrations" -> Cpu_migrations
+      | "page_faults_min" -> Page_faults_min
+      | "page_faults_maj" -> Page_faults_maj
+      | "alignment_faults" -> Alignment_faults
+      | "emulation_faults" -> Emulation_faults
+      | "dummy" -> Dummy
+      | _ -> invalid_arg "kind_of_sexp"
+
+    let of_string s = try Some (of_string_exn s) with _ -> None
+
+    let compare = compare
+  end
+  module PerfSet = Set.Make(Perf)
+
   module Size = struct
     type t =
       | Full
@@ -349,7 +432,7 @@ module Topic = struct
     | Gc : Gc.t kind
 
     (* Use the perf-stat(1) command or ocaml-libperf *)
-    | Perf : string kind
+    | Perf : Perf.t kind
 
     (* The executable size *)
     | Size : Size.t kind
@@ -357,13 +440,14 @@ module Topic = struct
   type t = Topic : 'a * 'a kind -> t
 
   let of_string s =
+    let _ = Printf.printf "=> %s\n" s in
     try Topic (Size.of_string_exn s, Size)
     with Invalid_argument _ ->
     try Topic (Gc.of_string_exn s, Gc)
     with Invalid_argument _ ->
     try
-      let s = Perf.Attr.Kind.(of_string s |> to_string) in
-      Topic (s, Perf)
+    let _ = Printf.printf "=> %s\n" s in
+      Topic (Perf.of_string_exn s, Perf)
     with _ ->
       (match s with
        | "time_real" -> Topic (Time.Real, Time)
@@ -376,7 +460,7 @@ module Topic = struct
     match t with
     | Topic (t, Time) -> "time_" ^ Time.to_string t
     | Topic (gc, Gc) -> Gc.to_string gc
-    | Topic (p, Perf) -> p
+    | Topic (p, Perf) -> Perf.to_string p
     | Topic (sz, Size) -> Size.to_string sz
 
   let sexp_of_t t =
@@ -384,7 +468,7 @@ module Topic = struct
     match t with
     | Topic (time, Time) -> List [Atom "Time"; Time.sexp_of_t time]
     | Topic (gc, Gc) -> List [Atom "Gc"; Gc.sexp_of_t gc]
-    | Topic (perf, Perf) -> List [Atom "Perf"; sexp_of_string perf]
+    | Topic (perf, Perf) -> List [Atom "Perf"; Perf.sexp_of_t perf]
     | Topic (sz, Size) ->
         match sz with
         | Size.Full -> Atom "Size"
@@ -395,7 +479,7 @@ module Topic = struct
     match s with
     | List [Atom "Time"; t] -> Topic (Time.t_of_sexp t, Time)
     | List [Atom "Gc"; t] -> Topic (Gc.t_of_sexp t, Gc)
-    | List [Atom "Perf"; t] -> Topic (string_of_sexp t, Perf)
+    | List [Atom "Perf"; t] -> Topic (Perf.t_of_sexp t, Perf)
     | Atom "Size" -> Topic (Size.Full, Size)
     | List [Atom "Size"; t] -> Topic (Size.t_of_sexp t, Size)
     | _ -> invalid_arg "t_of_sexp"
@@ -404,7 +488,7 @@ module Topic = struct
     | Topic (a, Time), Topic (b, Time) -> Time.compare a b
     | Topic (a, Gc), Topic (b, Gc) -> Gc.compare a b
     | Topic (a, Size), Topic (b, Size) -> Size.compare a b
-    | Topic (a, Perf), Topic (b, Perf) -> String.compare a b
+    | Topic (a, Perf), Topic (b, Perf) -> Perf.compare a b
     | Topic (_, Time), _ -> -1
     | _, Topic (_, Time) -> 1
     | Topic (_, Size), _ -> -1
@@ -563,7 +647,7 @@ module Benchmark = struct
   } [@@deriving sexp]
 
   let make ~name ?(descr="") ~cmd ?(cmd_check=[]) ?(file_check=[])
-      ?binary ?env ~speed ?(timeout=600) ?(weight=1.) ?(discard=[]) ~topics 
+      ?binary ?env ~speed ?(timeout=600) ?(weight=1.) ?(discard=[]) ~topics
       ?(return_value=0) () =
     { name; descr; cmd; cmd_check; file_check; binary; env; speed; timeout;
       weight; discard; topics = TSet.of_list topics; return_value; }
@@ -603,14 +687,14 @@ module Benchmark = struct
     | `None -> l
     | `Matching globs ->
         let res = List.map
-            (fun re -> Re.compile @@ Re_glob.globx ~anchored:true re) globs in
+            (fun re -> Re.compile @@ Re.Glob.globx ~anchored:true re) globs in
         List.filter_map (fun (name, path) ->
             if List.(map (fun re -> Re.execp re name) res |> mem true)
             then Some (name, path) else None
           ) l
     | `Exclude globs ->
         let res = List.map
-            (fun re -> Re.compile @@ Re_glob.globx ~anchored:true re) globs in
+            (fun re -> Re.compile @@ Re.Glob.globx ~anchored:true re) globs in
         List.filter_map (fun (name, path) ->
             if List.(map (fun re -> Re.execp re name) res |> mem true)
             then None else Some (name, path)
@@ -633,7 +717,7 @@ module Result = struct
       let size file =
         match Util.Cmd.lines_of_cmd ("size -Bd "^file) with
         | Unix.WEXITED 0, [_; szs] ->
-            (match Re_pcre.split ~rex:Re.(compile (rep1 (set " \t\n"))) szs with
+            (match Re.Pcre.split ~rex:Re.(compile (rep1 (set " \t\n"))) szs with
              | ""::text::data::bss::total::_
              | text::data::bss::total::_ ->
                  Some (int_of_string total),
@@ -968,7 +1052,7 @@ module DB2 = struct
       output_string oc @@ String.concat sep context_ids ^ "\n";
       SMap.iter (fun bench ctx_map ->
           let bench = if escape_uscore
-            then Re_pcre.(substitute ~rex:(regexp "_") ~subst:(fun _ -> "\\\\_") bench)
+            then Re.Pcre.(substitute ~rex:(regexp "_") ~subst:(fun _ -> "\\\\_") bench)
             else bench in
           output_string oc @@ bench ^ sep;
           SMap.bindings ctx_map
@@ -1127,17 +1211,18 @@ module Perf_wrapper = struct
   include Process
 
   let run_once ?env ?timeout cmd evts =
-    let evts = SSet.elements evts in
+    let evts = Topic.PerfSet.elements evts in
     let perf_cmdline = ["perf"; "stat"; "-x,"; ] in
     let perf_cmdline = match evts with
       | [] -> perf_cmdline
-      | _ -> perf_cmdline @ ["-e"; String.concat "," evts] in
+      | _ -> perf_cmdline @ ["-e"; String.concat "," @@ List.map Topic.Perf.to_string evts] in
     let cmd = perf_cmdline @ cmd in
     let env = match env with
       | None -> [|"LANG=C"|]
       | Some env -> Array.of_list @@ "LANG=C"::env in
     let cmd_string = String.concat " " cmd in
     let time_start = Oclock.(gettime monotonic) in
+    let _ = Printf.fprintf stderr "%s\n" cmd_string in
     let p_stdout, p_stdin, p_stderr = Unix.open_process_full cmd_string env in
     try
       let stdout_string = Util.File.string_of_ic p_stdout in
@@ -1149,19 +1234,20 @@ module Perf_wrapper = struct
       Sys.(set_signal sigalrm (Signal_handle (fun _ -> ())));
       let process_status =  Unix.close_process_full (p_stdout, p_stdin, p_stderr) in
       let time_end = Oclock.(gettime monotonic) in
+      let _ = List.iter (Printf.printf "stderr %s\n") stderr_lines in
       let gc_topics = data_of_gc_stats stderr_lines in
       let rex = Re.(str "," |> compile) in
-      let stderr_lines = List.map (Re_pcre.split ~rex) stderr_lines in
+      let stderr_lines = List.map (Re.Pcre.split ~rex) stderr_lines in
       let time_topics = [Topic.(Topic (Time.Real, Time),
                                 `Int Int64.(rem time_end time_start))] in
       let data = List.fold_left
           (fun acc l -> match l with
-             | [v; ""; event; ]
-             | [v; ""; event; _] ->
-                 TMap.add Topic.(Topic (event, Perf)) (Measure.of_string v) acc
+             | v :: "" :: event :: _ ->
+               let _ = Printf.printf "Measuring %s\n" event in
+                 TMap.add Topic.(Topic (Perf.of_string_exn event, Perf)) (Measure.of_string v) acc
              | l ->
                  Printf.eprintf
-                   "Ignoring perf result line [%s]" (String.concat "," l);
+                   "Ignoring perf result line [%s] %s\n" (String.concat "," l) (List.nth l 2);
                  acc
           ) TMap.empty stderr_lines in
       let data = List.fold_left (fun a (k, v) -> TMap.add k v a) data gc_topics in
@@ -1186,38 +1272,12 @@ module Perf_wrapper = struct
     run ~return_value ~time_limit (fun () -> run_once ?env ?timeout cmd evts)
 end
 
-module Libperf_wrapper = struct
-  include Process
-
-  let run_once ?env ?timeout cmd evts =
-    let open Perf in
-    let attrs = SSet.elements evts |> List.map Attr.Kind.of_string in
-    let attrs = List.map Perf.Attr.make attrs in
-    (* /!\ Perf.with_process <> Process.with_process, but similar /!\ *)
-    with_process
-      ?env ?timeout ~stdout:"stdout" ~stderr:"stderr" cmd attrs |> function
-    | `Ok {process_status; stdout; stderr; duration; data} ->
-        let data = KindMap.fold
-            (fun k v a -> TMap.add Topic.(Topic (Attr.Kind.to_string k, Perf)) (`Int v) a)
-            data TMap.empty in
-        let data = TMap.add Topic.(Topic ((Time.Real, Time))) (`Int duration) data in
-        let data = List.fold_left (fun a (k, v) -> TMap.add k v a)
-            data
-            (data_of_gc_stats (String.last_n_lines 20 stderr))
-        in
-        `Ok Execution.{ process_status; stdout; stderr; data; checked=None; }
-    | `Timeout -> `Timeout
-    | `Exn e -> Execution.error e
-
-  let run ?env ?timeout ~return_value ~time_limit cmd evts =
-    run ~return_value ~time_limit (fun () -> run_once ?env ?timeout cmd evts)
-end
 
 module Runner = struct
   type execs = {
     time: Topic.TimeSet.t;
     gc: Topic.GcSet.t;
-    perf: SSet.t;
+    perf: Topic.PerfSet.t;
   }
 
   let make_tmp_file suffix =
@@ -1226,8 +1286,8 @@ module Runner = struct
 
   let run_command ?(discard_stdout=false) prog args =
     let cmd = Array.fold_left (fun acc arg -> acc ^ arg ^ " ") "" args in
-    let fd_stdout = 
-      if discard_stdout then snd (make_tmp_file ".out") 
+    let fd_stdout =
+      if discard_stdout then snd (make_tmp_file ".out")
       else Unix.stdout in
     let pid = Unix.create_process prog args Unix.stdin fd_stdout Unix.stderr in
     let rpid, status = Unix.waitpid [] pid in
@@ -1269,7 +1329,8 @@ module Runner = struct
     let open Benchmark in
     let open Result in
     let b = res.bench in
-    if b.file_check <> []
+    res
+    (*if b.file_check <> []
     then run_file_check ?opamroot ~interactive b.file_check res
     else
     if b.cmd_check <> [] then
@@ -1280,7 +1341,7 @@ module Runner = struct
       let args = Array.of_list args_list in
       let check_res = if run_command prog args then (Some true) else (Some false) in
       { res with check = check_res }
-    else res
+                  else res*)
 
   let run_exn ?(use_perf=false) ?opamroot ?context_id ~interactive ~fixed ~time_limit b =
     let open Benchmark in
@@ -1319,22 +1380,19 @@ module Runner = struct
         (fun t a -> match t with
            | Topic (t, Time) -> { a with time = TimeSet.add t a.time }
            | Topic (t, Gc) -> { a with gc = GcSet.add t a.gc }
-           | Topic (t, Perf) -> { a with perf= SSet.add t a.perf }
+           | Topic (t, Perf) -> { a with perf= PerfSet.add t a.perf }
            | Topic (t, Size) -> a
         )
         b.topics
         { time = TimeSet.empty;
           gc = GcSet.empty;
-          perf = SSet.empty;
+          perf = PerfSet.empty;
         }
     in
 
     let run_execs { time; gc; perf; } b =
       let return_value = b.return_value in
-      if use_perf then
         Perf_wrapper.(run ~interactive ~env ~return_value ~time_limit b.cmd perf)
-      else
-        Libperf_wrapper.(run ~interactive ~env ~return_value ~time_limit b.cmd perf)
     in
 
     if interactive then

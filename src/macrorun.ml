@@ -36,9 +36,9 @@ let write_res_copts copts res =
   );
 
   (* Write the result in cache too if cache exists *)
-  let rex = Re_pcre.regexp " " in
+  let rex = Re.Pcre.regexp " " in
   let name = res.Result.bench.Benchmark.name |> String.trim in
-  let name = Re_pcre.substitute ~rex ~subst:(fun _ -> "_") name in
+  let name = Re.Pcre.substitute ~rex ~subst:(fun _ -> "_") name in
   let interactive = copts.output = `None in
   let opamroot = copts.opamroot in
   try
@@ -106,7 +106,7 @@ let run copts switch topics selectors skip force fixed time_limit =
     | Some switch -> switch in
   let switch = try
       List.hd @@ Util.Opam.switches_matching ?opamroot switch
-    with Failure "hd" ->
+    with Failure _ ->
       Printf.eprintf "Pattern %s do not match any existing switch. Aborting.\n" switch;
       exit 1
   in
@@ -145,6 +145,7 @@ let run copts switch topics selectors skip force fixed time_limit =
       let b = load_conv_exn filename in
       let b = { b with topics = TSet.union topics b.topics } in
       let already_run = (already_run switch b && not force) in
+      let already_run = false in
       let binary_missing =
         try Util.FS.is_file (List.hd b.cmd) <> Some true
         with _ -> true in
@@ -159,7 +160,7 @@ let run copts switch topics selectors skip force fixed time_limit =
            in let reason_str = String.concat ", " reason in
            Printf.printf "Skipping %s (%s)\n" b.name reason_str)
       else
-        let res = Runner.run_exn ?opamroot ~context_id:switch ~interactive ~fixed ~time_limit b in
+        let res = Runner.run_exn ?opamroot ~use_perf:true ~context_id:switch ~interactive ~fixed ~time_limit b in
         write_res_copts copts res
     in
     match kind_of_file selector with
@@ -253,14 +254,14 @@ set title "Benchmarks"
 set yrange [ 0. : 1.25 ] noreverse nowriteback
 %s|}
   in
-  let topic = Re_pcre.substitute ~rex:(Re_pcre.regexp "_") ~subst:(fun _ -> "\\\\_") topic in
+  let topic = Re.Pcre.substitute ~rex:(Re.Pcre.regexp "_") ~subst:(fun _ -> "\\\\_") topic in
   Printf.fprintf oc fmt terminal topic (plot_line nb_cols)
 
 (* [selectors] are bench _names_ *)
 let summarize output evts ref_ctx_id pp selectors force ctx_ids no_normalize =
   let evts =
     try List.map Topic.of_string evts
-    with Invalid_argument "Topic.of_string" ->
+    with Invalid_argument _ ->
       (Printf.eprintf
          "At least one of the requested topics (-t) is invalid. Exiting.\n";
        exit 1)
@@ -301,7 +302,7 @@ let summarize output evts ref_ctx_id pp selectors force ctx_ids no_normalize =
     | [] -> data
     | ctx_ids ->
         let res = List.map
-            (fun p -> Re_glob.globx ~anchored:true p |> Re.compile) ctx_ids in
+            (fun p -> Re.Glob.globx ~anchored:true p |> Re.compile) ctx_ids in
         SMap.map
           (SMap.filter
              (fun ctx _ ->
@@ -527,7 +528,15 @@ let perf_cmd =
     Arg.(non_empty & pos_all string [] & info [] ~docv:"<command>" ~doc) in
   let evts =
     let doc = "Same as the -e argument of PERF-STAT(1)." in
-    Arg.(value & opt (list string) ["cycles"] & info ["e"; "event"] ~docv:"perf-events" ~doc) in
+    let topic_parser s =
+      try `Ok (Topic.Perf.of_string_exn s)
+      with _ -> `Error (Printf.sprintf "%s is not a valid perf topic" s)
+    in
+    let topic_printer ppf t =
+      Format.pp_print_string ppf (Topic.Perf.to_string t)
+    in
+    let converter = topic_parser, topic_printer in
+    Arg.(value & opt_all converter [Topic.Perf.Cycles] & info ["e"; "event"] ~docv:"perf-events" ~doc) in
   let doc = "Macrobenchmark using PERF-STAT(1) (Linux only)." in
   let man = [
     `S "DESCRIPTION";
