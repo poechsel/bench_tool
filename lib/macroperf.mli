@@ -49,6 +49,8 @@ module Util : sig
   end
 
   module Opam : sig
+    val exe : string
+
     val (/) : string -> string -> string
     (** Alias to Filename.concat *)
 
@@ -76,7 +78,7 @@ end
 
 module Topic : sig
   module Time : sig
-    type t = Real | User | Sys
+    type t = Real | User | Sys | Compile
   end
 
   module Gc : sig
@@ -235,7 +237,7 @@ module Benchmark : sig
   val find_installed :
     ?opamroot:string ->
     ?glob:[`None | `Matching of string list | `Exclude of string list] ->
-    string -> (string * string) list
+    string -> (string * (string * string)) list
   (** [find_installed ?glob switch] is the list of (benchmarks, path)
       installed in switch [switch], that match the glob expression
       [?glob] if it is defined. *)
@@ -457,7 +459,7 @@ end
 
 module Runner : sig
   val run_exn : ?use_perf:bool -> ?opamroot:string ->
-    ?context_id:string -> interactive:bool -> fixed:bool ->
+    ?context_id:string -> modname:string -> interactive:bool -> fixed:bool ->
     time_limit:float -> Benchmark.t -> Result.t
 
   val run_check : ?opamroot:string -> interactive:bool -> Result.t -> Result.t

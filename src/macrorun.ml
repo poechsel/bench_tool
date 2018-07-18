@@ -75,7 +75,7 @@ let make_bench_and_run copts cmd topics time_limit =
 
   (* Run the benchmark *)
   let interactive = copts.output = `None in
-  let res = Runner.run_exn ~interactive ~fixed:false ~time_limit bench in
+  let res = Runner.run_exn ~modname:"" ~interactive ~fixed:false ~time_limit bench in
 
   (* Write the result in the file specified by -o, or stdout and maybe
      in cache as well *)
@@ -124,6 +124,7 @@ let run copts switch topics selectors skip force fixed time_limit =
   in
 
   let files, names = List.partition Sys.file_exists selectors in
+  let files = List.map (fun x -> ("ERROR", x)) files in
   let selectors = match files, names with
     | [], [] -> List.map snd @@ Benchmark.find_installed ?opamroot switch
     | files, [] -> files
@@ -139,7 +140,7 @@ let run copts switch topics selectors skip force fixed time_limit =
   in
   (* If selector is a file, run the benchmark in the file, if it is
      a directory, run all benchmarks in the directory *)
-  let rec run_inner selector =
+  let rec run_inner (modname, selector) =
     let run_bench filename =
       let open Benchmark in
       let b = load_conv_exn filename in
@@ -160,7 +161,10 @@ let run copts switch topics selectors skip force fixed time_limit =
            in let reason_str = String.concat ", " reason in
            Printf.printf "Skipping %s (%s)\n" b.name reason_str)
       else
-        let res = Runner.run_exn ?opamroot ~use_perf:true ~context_id:switch ~interactive ~fixed ~time_limit b in
+        let res =
+          Runner.run_exn ?opamroot ~use_perf:true ~context_id:switch
+            ~modname ~interactive ~fixed ~time_limit b
+        in
         write_res_copts copts res
     in
     match kind_of_file selector with
@@ -204,7 +208,7 @@ let list copts switches =
              if len > a then len else a)
           0 files_names
       in
-      List.iter (fun (n,fn) ->
+      List.iter (fun (n,(_, fn)) ->
           Printf.printf "%-*s %s\n" max_name_len n fn
         ) files_names in
   let print_all switches =

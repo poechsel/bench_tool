@@ -241,17 +241,19 @@ end
 
 module Topic = struct
   module Time = struct
-    type t = Real | User | Sys [@@deriving sexp]
+    type t = Real | User | Sys | Compile [@@deriving sexp]
     let of_string = function
       | "real" -> Real
       | "user" -> User
       | "sys" -> Sys
+      | "compile" -> Compile
       | _ -> invalid_arg "time_of_string"
 
     let to_string = function
       | Real -> "real"
       | User -> "user"
       | Sys -> "sys"
+      | Compile -> "compile"
 
     let compare = compare
   end
@@ -668,17 +670,18 @@ module Benchmark = struct
     let share = Util.Opam.share ?opamroot switch in
     (try Util.FS.ls share
      with Unix.Unix_error (Unix.ENOENT, _, _) -> [])
-    |> List.map (fun n -> Filename.concat share n)
-    |> List.filter (fun n -> Unix.((stat n).st_kind = S_DIR))
+    |> List.map (fun n -> n, Filename.concat share n)
+    |> List.filter (fun (_, n) -> Unix.((stat n).st_kind = S_DIR))
     |> List.map
-      (fun selector ->
+      (fun (modname, selector) ->
          let bench_files =
            Util.FS.ls selector
            |> List.map (Filename.concat selector)
            |> List.filter (fun fn -> Filename.check_suffix fn ".bench")
+           |> List.map (fun x -> (modname, x))
          in
          let bench_names = List.map
-             (fun fn -> let b = load_conv_exn fn in b.name)
+             (fun (_, fn) -> let b = load_conv_exn fn in b.name)
              bench_files in
          List.combine bench_names bench_files
       )
@@ -688,16 +691,16 @@ module Benchmark = struct
     | `Matching globs ->
         let res = List.map
             (fun re -> Re.compile @@ Re.Glob.globx ~anchored:true re) globs in
-        List.filter_map (fun (name, path) ->
+        List.filter_map (fun (name, bench) ->
             if List.(map (fun re -> Re.execp re name) res |> mem true)
-            then Some (name, path) else None
+            then Some (name, bench) else None
           ) l
     | `Exclude globs ->
         let res = List.map
             (fun re -> Re.compile @@ Re.Glob.globx ~anchored:true re) globs in
-        List.filter_map (fun (name, path) ->
+        List.filter_map (fun (name, bench) ->
             if List.(map (fun re -> Re.execp re name) res |> mem true)
-            then None else Some (name, path)
+            then None else Some (name, bench)
           ) l
 end
 
@@ -1233,12 +1236,67 @@ module Process = struct
            acc
       ) [] lines
 
+  let data_of_build lines =
+    let rex_timings = Re.(Posix.re ".?( *)([0-9]\.[0-9]*)s.*" |> compile) in
+    let lines =
+      List.fold_left
+        (fun acc line ->
+           try
+             let groups = Re.exec rex_timings line in
+             if String.length(Re.Group.get groups 1) < 2 then
+               Re.Group.get groups 2 :: acc
+             else
+               acc
+           with Not_found ->
+             acc)
+        []
+        lines
+    in
+    let times = List.map float_of_string lines in
+    let time = List.fold_left (+.) 0.0 times in
+    let _ = List.iter (Printf.printf "%s\n") lines in
+    Topic.(Topic(Topic.Time.Compile, Time), Measure.of_float time) :: []
+
 end
 
 module Perf_wrapper = struct
   include Process
 
-  let run_once ?env ?timeout cmd evts =
+  let bench_build ?env ?timeout cmd modname =
+    let cmd = ["OCAMLPARAM=\"_,timings=1\""; Util.Opam.exe; "reinstall"; modname; "-vvvvvvvvvvvvvvv" ] in
+    let env = match env with
+      | None -> [|"LANG=C"|]
+      | Some env -> Array.of_list @@ "LANG=C"::env in
+    let cmd_string = String.concat " " cmd in
+    let _ = Printf.printf "\n\n>>>>>>>>>>>> %s\n\n\n" cmd_string in
+    let _ = Printf.fprintf stderr "%s\n" cmd_string in
+    let p_stdout, p_stdin, p_stderr = Unix.open_process_full cmd_string env in
+    try
+      let stdout_lines = Util.File.lines_of_ic p_stdout in
+      let build_topics = data_of_build stdout_lines in
+      let stderr_lines = Util.File.lines_of_ic p_stderr in
+      (* Setup an alarm that will make Unix.close_process_full raise
+         EINTR if its process is not terminated by then *)
+      let (_:int) = match timeout with None -> 0 | Some t -> Unix.alarm t in
+      Sys.(set_signal sigalrm (Signal_handle (fun _ -> ())));
+      let _ =  Unix.close_process_full (p_stdout, p_stdin, p_stderr) in
+      let data = TMap.empty in
+      let data = List.fold_left (fun a (k, v) -> TMap.add k v a) data build_topics in
+      `Ok data
+    with
+    | Unix.Unix_error (Unix.EINTR, _, _) -> `Timeout
+    | exn ->
+      let _ =
+        Printf.eprintf "Oupsi erreur %s\n" (Printexc.to_string exn) in
+        ignore @@ Unix.close_process_full (p_stdout, p_stdin, p_stderr);
+        Execution.error exn
+
+  let run_once ?env ?timeout cmd evts modname =
+    let data = bench_build ?env ?timeout cmd modname in
+    match data with
+    | `Timeout -> `Timeout
+    | `Error exn -> `Error exn
+    | `Ok data ->
     let evts = Topic.PerfSet.elements evts in
     let perf_cmdline = ["perf"; "stat"; "-x,"; ] in
     let perf_cmdline = match evts with
@@ -1268,7 +1326,6 @@ module Perf_wrapper = struct
       let perf_topics = data_of_perf_stats perf_lines in
       let time_topics = [Topic.(Topic (Time.Real, Time),
                                 `Int Int64.(rem time_end time_start))] in
-      let data = TMap.empty in
       let data = List.fold_left (fun a (k, v) -> TMap.add k v a) data gc_topics in
       let data = List.fold_left (fun a (k, v) -> TMap.add k v a) data perf_topics in
       let data = List.fold_left (fun a (k, v) -> TMap.add k v a) data time_topics in
@@ -1288,10 +1345,10 @@ module Perf_wrapper = struct
         ignore @@ Unix.close_process_full (p_stdout, p_stdin, p_stderr);
         Execution.error exn
 
-  let run ?env ?timeout ~return_value ~time_limit cmd evts =
+  let run ?env ?timeout ~return_value ~time_limit cmd evts modname =
     (* if evts = SSet.empty then [] *)
     (* else *)
-    run ~return_value ~time_limit (fun () -> run_once ?env ?timeout cmd evts)
+    run ~return_value ~time_limit (fun () -> run_once ?env ?timeout cmd evts modname)
 end
 
 
@@ -1384,7 +1441,7 @@ module Runner = struct
       ("OCAMLRUNPARAM=" ^ p) :: env
 
 
-  let run_exn ?(use_perf=false) ?opamroot ?context_id ~interactive ~fixed ~time_limit b =
+  let run_exn ?(use_perf=false) ?opamroot ?context_id ~modname ~interactive ~fixed ~time_limit b =
     let open Benchmark in
     let context_id = match context_id with
       | Some context_id -> context_id
@@ -1432,7 +1489,7 @@ module Runner = struct
 
     let run_execs { time; gc; perf; } b =
       let return_value = b.return_value in
-        Perf_wrapper.(run ~interactive ~env ~return_value ~time_limit b.cmd perf)
+        Perf_wrapper.(run ~interactive ~env ~return_value ~time_limit b.cmd perf modname)
     in
 
     if interactive then
