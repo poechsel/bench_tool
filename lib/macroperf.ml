@@ -1177,6 +1177,15 @@ module Process = struct
         end
     | other -> [other]
 
+  let split_stderr_gc_perf stderr_lines =
+    List.partition (fun line ->
+      try
+        ignore @@ String.index line ':';
+        true
+      with Not_found ->
+        false
+    ) stderr_lines
+
   let data_of_gc_stats lines =
     let data =
       List.fold_left
@@ -1186,7 +1195,8 @@ module Process = struct
              let gc = Topic.Gc.of_string_exn @@ String.sub s 0 i in
              let v = Int64.of_string @@ String.sub s (i+2) (String.length s - i - 2) in
              Topic.(Topic (gc, Gc), Measure.of_int64 v) :: acc
-           with _ -> acc)
+           with _ ->
+             acc)
         [] lines
     in
     let data = (* Make promoted_words a ratio of minor_words *)
@@ -1204,6 +1214,24 @@ module Process = struct
       with Not_found -> data
     in
     data
+
+  let data_of_perf_stats lines =
+    let rex = Re.(str "," |> compile) in
+    let lines = List.map (Re.Pcre.split ~rex) lines in
+    List.fold_left
+      (fun acc l -> match l with
+         | v :: "" :: event :: _ ->
+           begin try
+             let perf = Topic.Perf.of_string_exn event in
+             Topic.(Topic (perf, Perf), Measure.of_string v) :: acc
+           with _ ->
+             acc
+           end
+         | l ->
+           Printf.eprintf
+             "Ignoring perf result line [%s] %s\n" (String.concat "," l) (List.nth l 2);
+           acc
+      ) [] lines
 
 end
 
@@ -1235,22 +1263,14 @@ module Perf_wrapper = struct
       let process_status =  Unix.close_process_full (p_stdout, p_stdin, p_stderr) in
       let time_end = Oclock.(gettime monotonic) in
       let _ = List.iter (Printf.printf "stderr %s\n") stderr_lines in
-      let gc_topics = data_of_gc_stats stderr_lines in
-      let rex = Re.(str "," |> compile) in
-      let stderr_lines = List.map (Re.Pcre.split ~rex) stderr_lines in
+      let gc_lines, perf_lines = split_stderr_gc_perf stderr_lines in
+      let gc_topics = data_of_gc_stats gc_lines in
+      let perf_topics = data_of_perf_stats perf_lines in
       let time_topics = [Topic.(Topic (Time.Real, Time),
                                 `Int Int64.(rem time_end time_start))] in
-      let data = List.fold_left
-          (fun acc l -> match l with
-             | v :: "" :: event :: _ ->
-               let _ = Printf.printf "Measuring %s\n" event in
-                 TMap.add Topic.(Topic (Perf.of_string_exn event, Perf)) (Measure.of_string v) acc
-             | l ->
-                 Printf.eprintf
-                   "Ignoring perf result line [%s] %s\n" (String.concat "," l) (List.nth l 2);
-                 acc
-          ) TMap.empty stderr_lines in
+      let data = TMap.empty in
       let data = List.fold_left (fun a (k, v) -> TMap.add k v a) data gc_topics in
+      let data = List.fold_left (fun a (k, v) -> TMap.add k v a) data perf_topics in
       let data = List.fold_left (fun a (k, v) -> TMap.add k v a) data time_topics in
 
       `Ok Execution.{
@@ -1263,6 +1283,8 @@ module Perf_wrapper = struct
     with
     | Unix.Unix_error (Unix.EINTR, _, _) -> `Timeout
     | exn ->
+      let _ =
+        Printf.eprintf "Oupsi erreur %s\n" (Printexc.to_string exn) in
         ignore @@ Unix.close_process_full (p_stdout, p_stdin, p_stderr);
         Execution.error exn
 
@@ -1343,6 +1365,25 @@ module Runner = struct
       { res with check = check_res }
                   else res*)
 
+  let set_ocamlrunparam env p =
+    let was_matched = ref false in
+    let re = Re.Posix.re "OCAMLRUNPARAM=.*" |> Re.compile in
+    let env =
+      List.map (fun s ->
+        try
+          let groups = Re.exec re s in
+          was_matched := true;
+          s ^ "," ^ p
+        with Not_found ->
+          s)
+        env
+    in
+    if !was_matched then
+      env
+    else
+      ("OCAMLRUNPARAM=" ^ p) :: env
+
+
   let run_exn ?(use_perf=false) ?opamroot ?context_id ~interactive ~fixed ~time_limit b =
     let open Benchmark in
     let context_id = match context_id with
@@ -1368,9 +1409,8 @@ module Runner = struct
     Unix.chdir temp_dir;
 
     let env = match b.env with
-      | None -> ["OCAMLRUNPARAM=v=0x400"] @
-                Array.to_list @@ Unix.environment ()
-      | Some e -> "OCAMLRUNPARAM=v=0x400"::e
+      | None -> set_ocamlrunparam (Array.to_list @@ Unix.environment ()) "v=0x400"
+      | Some e -> set_ocamlrunparam e "v=0x400"
     in
 
     (* Transform individial topics into a list of executions *)
