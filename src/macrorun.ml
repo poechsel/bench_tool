@@ -53,34 +53,6 @@ let write_res_copts copts res =
          Result.save_hum fn res) res_file
   with Not_found -> ()
 
-(* Generic function to create and run a benchmark *)
-let make_bench_and_run copts cmd time_limit =
-  let absolute = function
-    | [] -> assert false
-    | h::t as cmd ->
-        if not @@ Sys.file_exists h then invalid_arg @@ Printf.sprintf "%s does not exist" h
-        else if not @@ Filename.is_relative h then cmd
-        else (Filename.concat (Unix.getcwd ()) h) :: t
-  in
-  let cmd = absolute cmd in
-  let name = Filename.basename @@ List.hd cmd in
-  let bench =
-    Benchmark.make
-      ~name
-      ~descr:("Benchmark of " ^ name)
-      ~cmd
-      ~speed:`Slower
-      ~topics:[] ()
-  in
-
-  (* Run the benchmark *)
-  let interactive = copts.output = `None in
-  let res = Runner.run_exn ~modname:"" ~interactive ~fixed:false ~time_limit bench in
-
-  (* Write the result in the file specified by -o, or stdout and maybe
-     in cache as well *)
-  write_res_copts copts res
-
 let kind_of_file filename =
   let open Unix in
   try
@@ -95,7 +67,7 @@ let is_benchmark_file filename =
   kind_of_file filename = `File &&
   Filename.check_suffix filename ".bench"
 
-let run copts switch selectors skip force fixed time_limit =
+let run inlining_args copts switch selectors skip force fixed time_limit =
   let opamroot = copts.opamroot in
   let switch = match switch with
     | None -> Util.Opam.cur_switch ~opamroot
@@ -156,7 +128,7 @@ let run copts switch selectors skip force fixed time_limit =
            Printf.printf "Skipping %s (%s)\n" b.name reason_str)
       else
         let res =
-          Runner.run_exn ?opamroot ~use_perf:true ~context_id:switch
+          Runner.run_exn ?opamroot ~inlining_args ~use_perf:true ~context_id:switch
             ~modname ~interactive ~fixed ~time_limit b
         in
         write_res_copts copts res
@@ -430,26 +402,26 @@ let make_inlining_args round inline_branch_factor inline inline_toplevel inline_
       inline_lifting_benefit inline_max_depth unbox_closures unbox_closures_factor
       inline_max_unroll remove_unused_arguments
   =
-  let rs = string_of_int round in
+  let rs = string_of_int (round - 1) in
   let make_int_arg name v =
     match v with
     | None -> ""
-    | Some i -> "-" ^ name ^ " " ^ rs ^ "=" ^ string_of_int i
+    | Some i -> name ^ "=" ^ rs ^ "=" ^ string_of_int i
   in
   let make_float_arg name v =
     match v with
     | None -> ""
-    | Some i -> "-" ^ name ^ " " ^ rs ^ "=" ^ string_of_float i
+    | Some i -> name ^ "=" ^ rs ^ "=" ^ string_of_float i
   in
   let make_bool_arg name v =
     match v with
-    | Some true -> "-" ^ name
+    | Some true -> name ^ "=1"
     | _ -> ""
   in
   let optimise_param =
     match round with
-    | 2 -> "-O2"
-    | 3 -> "-O3"
+    | 2 -> "O2"
+    | 3 -> "O3"
     | _ -> ""
   in
   let a =
@@ -470,9 +442,9 @@ let make_inlining_args round inline_branch_factor inline inline_toplevel inline_
     make_bool_arg "remove-unused-arguments" remove_unused_arguments ::
     []
   in
-  String.concat " " a
+  String.concat "," a ^ ",_"
 
-let test = Term.(pure make_inlining_args $ round $ inline_branch_factor $ inline $ inline_toplevel $ inline_alloc_cost $
+let inlining_args = Term.(pure make_inlining_args $ round $ inline_branch_factor $ inline $ inline_toplevel $ inline_alloc_cost $
                  inline_branch_cost $ inline_prim_cost $ inline_call_cost $ inline_indirect_cost $
                  inline_lifting_benefit $ inline_max_depth $ unbox_closures $ unbox_closures_factor $
                  inline_max_unroll $ remove_unused_arguments )
@@ -503,7 +475,7 @@ let run_cmd =
     `S "DESCRIPTION";
     `P "Run macrobenchmarks from files."] @ help_secs
   in
-  Term.(pure run $ copts_t $ switch $ selector $ skip $ force $ fixed $ time_limit),
+  Term.(pure run $ inlining_args $ copts_t $ switch $ selector $ skip $ force $ fixed $ time_limit),
   Term.info "run" ~doc ~sdocs:copts_sect ~man
 
 

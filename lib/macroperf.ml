@@ -1262,8 +1262,8 @@ end
 module Perf_wrapper = struct
   include Process
 
-  let bench_build ?env ?timeout cmd modname =
-    let cmd = ["OCAMLPARAM=\"_,timings=1\""; Util.Opam.exe; "reinstall"; modname; "-vvvvvvvvvvvvvvv" ] in
+  let bench_build ?env ?timeout ~inlining_args cmd modname =
+    let cmd = ["OCAMLPARAM=\"timings=1," ^ inlining_args ^ "\""; Util.Opam.exe; "reinstall"; modname; "-vvvvvvvvvvvvvvv" ] in
     let env = match env with
       | None -> [|"LANG=C"|]
       | Some env -> Array.of_list @@ "LANG=C"::env in
@@ -1291,8 +1291,8 @@ module Perf_wrapper = struct
         ignore @@ Unix.close_process_full (p_stdout, p_stdin, p_stderr);
         Execution.error exn
 
-  let run_once ?env ?timeout cmd evts modname =
-    let data = bench_build ?env ?timeout cmd modname in
+  let run_once ?env ?timeout ~inlining_args cmd evts modname =
+    let data = bench_build ?env ?timeout ~inlining_args cmd modname in
     match data with
     | `Timeout -> `Timeout
     | `Error exn -> `Error exn
@@ -1344,10 +1344,10 @@ module Perf_wrapper = struct
         ignore @@ Unix.close_process_full (p_stdout, p_stdin, p_stderr);
         Execution.error exn
 
-  let run ?env ?timeout ~return_value ~time_limit cmd evts modname =
+  let run ?env ?timeout ~inlining_args ~return_value ~time_limit cmd evts modname =
     (* if evts = SSet.empty then [] *)
     (* else *)
-    run ~return_value ~time_limit (fun () -> run_once ?env ?timeout cmd evts modname)
+    run ~return_value ~time_limit (fun () -> run_once ?env ?timeout ~inlining_args cmd evts modname)
 end
 
 
@@ -1440,7 +1440,8 @@ module Runner = struct
       ("OCAMLRUNPARAM=" ^ p) :: env
 
 
-  let run_exn ?(use_perf=false) ?opamroot ?context_id ~modname ~interactive ~fixed ~time_limit b =
+  let run_exn ?(use_perf=false) ?opamroot ?context_id
+        ~inlining_args ~modname ~interactive ~fixed ~time_limit b =
     let open Benchmark in
     let context_id = match context_id with
       | Some context_id -> context_id
@@ -1488,7 +1489,7 @@ module Runner = struct
 
     let run_execs { time; gc; perf; } b =
       let return_value = b.return_value in
-        Perf_wrapper.(run ~interactive ~env ~return_value ~time_limit b.cmd perf modname)
+        Perf_wrapper.(run ~inlining_args ~interactive ~env ~return_value ~time_limit b.cmd perf modname)
     in
 
     if interactive then
