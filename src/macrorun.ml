@@ -54,7 +54,7 @@ let write_res_copts copts res =
   with Not_found -> ()
 
 (* Generic function to create and run a benchmark *)
-let make_bench_and_run copts cmd topics time_limit =
+let make_bench_and_run copts cmd time_limit =
   let absolute = function
     | [] -> assert false
     | h::t as cmd ->
@@ -70,7 +70,7 @@ let make_bench_and_run copts cmd topics time_limit =
       ~descr:("Benchmark of " ^ name)
       ~cmd
       ~speed:`Slower
-      ~topics ()
+      ~topics:[] ()
   in
 
   (* Run the benchmark *)
@@ -80,10 +80,6 @@ let make_bench_and_run copts cmd topics time_limit =
   (* Write the result in the file specified by -o, or stdout and maybe
      in cache as well *)
   write_res_copts copts res
-
-let perf copts cmd evts =
-  let evts = List.map (fun e -> Topic.(Topic (e, Perf))) evts in
-  make_bench_and_run copts cmd evts
 
 let kind_of_file filename =
   let open Unix in
@@ -99,7 +95,7 @@ let is_benchmark_file filename =
   kind_of_file filename = `File &&
   Filename.check_suffix filename ".bench"
 
-let run copts switch topics selectors skip force fixed time_limit =
+let run copts switch selectors skip force fixed time_limit =
   let opamroot = copts.opamroot in
   let switch = match switch with
     | None -> Util.Opam.cur_switch ~opamroot
@@ -111,7 +107,6 @@ let run copts switch topics selectors skip force fixed time_limit =
       exit 1
   in
   let interactive = copts.output = `None in
-  let topics = List.fold_right TSet.add topics TSet.empty in
 
   let already_run switch b =
     match
@@ -144,7 +139,6 @@ let run copts switch topics selectors skip force fixed time_limit =
     let run_bench filename =
       let open Benchmark in
       let b = load_conv_exn filename in
-      let b = { b with topics = TSet.union topics b.topics } in
       let already_run = (already_run switch b && not force) in
       let already_run = false in
       let binary_missing =
@@ -224,53 +218,8 @@ let list copts switches =
         List.(flatten @@ map Util.Opam.switches_matching s) in
   print_all switches
 
-let output_gnuplot_file oc backend datafile topic nb_cols =
-  let plot_line n =
-    Printf.sprintf "plot for [i=2:%d:2] '%s' u i:i+1:xtic(1) ti col(i) ls i\n" (2*n) datafile
-  in
-  let terminal = match backend with
-    | `Qt -> {|set terminal qt enhanced font "terminus,14" persist size 1000, 700|}
-    | `Svg -> "set terminal svg enhanced\n\
-               set output \'result.svg\'"
-  in
-  let fmt :  (string -> string -> string -> unit, out_channel, unit) format =
-    {|set style line 2 lc rgb '#E41A1C' # red
-set style line 4 lc rgb '#377EB8' # blue
-set style line 6 lc rgb '#4DAF4A' # green
-set style line 8 lc rgb '#984EA3' # purple
-set style line 10 lc rgb '#FF7F00' # orange
-set style line 12 lc rgb '#FFFF33' # yellow
-set style line 14 lc rgb '#A65628' # brown
-set style line 16 lc rgb '#F781BF' # pink
-set style histogram errorbars gap 1 title offset character 0, 0, 0
-set style fill solid 1.00 border lt -1
-set style data histograms
-%s
-set datafile separator ','
-set boxwidth 0.9 absolute
-set key inside right top vertical Right noreverse noenhanced autotitles nobox
-set datafile missing ''
-set ylabel "normalized %s (less is better)"
-set xtics border in scale 0,0 mirror rotate by -45  offset character 0, 0, 0 autojustify
-set xtics norangelimit font ",10"
-set xtics ()
-set title "Benchmarks"
-set yrange [ 0. : 1.25 ] noreverse nowriteback
-%s|}
-  in
-  let topic = Re.Pcre.substitute ~rex:(Re.Pcre.regexp "_") ~subst:(fun _ -> "\\\\_") topic in
-  Printf.fprintf oc fmt terminal topic (plot_line nb_cols)
-
 (* [selectors] are bench _names_ *)
-let summarize output evts ref_ctx_id pp selectors force ctx_ids no_normalize =
-  let evts =
-    try List.map Topic.of_string evts
-    with Invalid_argument _ ->
-      (Printf.eprintf
-         "At least one of the requested topics (-t) is invalid. Exiting.\n";
-       exit 1)
-  in
-
+let summarize output ref_ctx_id pp selectors force ctx_ids no_normalize =
   (* [selectors] are directories hopefully containing .summary
      files. *)
   let selectors = match selectors with
@@ -314,15 +263,6 @@ let summarize output evts ref_ctx_id pp selectors force ctx_ids no_normalize =
              ))
           data in
 
-  (* Filter on requested evts *)
-  let data = DB.map
-      (fun smry -> match evts with
-         | [] -> smry
-         | evts ->
-             Summary.{ smry with data = TMap.filter (fun t _ -> List.mem t evts) smry.data }
-      )
-      data in
-
   (* Create the DB2 from DB *)
   let data = DB.fold_data
       (fun bench context_id topic measure a ->
@@ -347,111 +287,7 @@ let summarize output evts ref_ctx_id pp selectors force ctx_ids no_normalize =
       (match output with
        | "" -> ignore @@ DB2.to_csv stdout data
        | fn -> Util.File.with_oc_safe (fun oc -> ignore @@ DB2.to_csv oc data) fn)
-  | `Gnuplot backend ->
-      let topic = fst @@ TMap.min_binding data |> Topic.to_string in
-      let tmp_data, oc_data = Filename.open_temp_file "macrorun" ".data" in
-      let nb_ctxs =
-        (try let nb_ctxs = DB2.to_csv ~escape_uscore:true
-            oc_data data in close_out oc_data; nb_ctxs
-         with exn -> (close_out oc_data; raise exn)) in
-      let tmp_f, oc = Filename.open_temp_file "macrorun" ".gnu" in
-      let () =
-        try output_gnuplot_file oc backend tmp_data topic nb_ctxs; close_out oc
-        with exn -> (close_out oc; raise exn) in
-      let (_:int) = Sys.command @@ Printf.sprintf "gnuplot %s" tmp_f in
-      (if output <> "" then
-        Util.File.with_oc_safe
-          (fun oc -> output_gnuplot_file oc backend tmp_data topic nb_ctxs) output);
-      Util.FS.rm_r [tmp_f; tmp_data]
-
   | _ -> failwith "Not implemented"
-
-let rank copts topics normalize pp context_ids =
-  Summary.summarize_dir Util.FS.macro_dir;
-  let topics = List.map Topic.of_string topics in
-
-  (* Create database *)
-  let data = DB.of_dir Util.FS.macro_dir in
-
-  (* Filter on requested topics *)
-  let data = DB.map
-      (fun smry -> match topics with
-         | [] -> smry
-         | topics ->
-             Summary.{ smry with data = TMap.filter (fun t _ -> List.mem t topics) smry.data }
-      )
-      data in
-
-  (* Filter on requested context_ids. If unspecified, take all. *)
-  let data =
-    if context_ids = [] then data
-    else
-      let context_ids = SSet.of_list context_ids in
-      SMap.map
-        (fun ctxmap -> SMap.filter (fun k _ -> SSet.mem k context_ids) ctxmap)
-        data
-  in
-
-  (* Flip the order bench, context_id in the DB. *)
-  let data = DB.fold (fun b c tmap -> DB.add c b tmap) data DB.empty in
-
-  let () = if data = DB.empty then exit 0 else () in
-
-  (* Now data is ordered context_id, bench, topics map *)
-  (* Compute the intersection of benchmarks done *)
-  let common_benchs =
-    let init_acc = SMap.(SSet.of_list @@ List.map fst @@ bindings @@ snd @@ min_binding data) in
-    SMap.fold (fun k v a ->
-        SSet.(inter a @@ of_list @@ List.map fst @@ SMap.bindings v)
-      )
-      data init_acc in
-
-  let () = if common_benchs = SSet.empty then
-      (Printf.eprintf
-         "Impossible to rank the requested compilers, because the intersection \
-          of benchmarks that have been run on each compiler is empty.\n";
-       exit 1
-      ) else () in
-
-  (* Filter on common benchs *)
-  let data = SMap.map
-      (fun benchmap ->
-         SMap.filter (fun k _ -> SSet.mem k common_benchs) benchmap)
-      data
-  in
-
-  (* Now data contains exactly what we want, i.e. the ctx_ids we
-     want / the common benchmarks / the topics we selected: generate
-     results *)
-
-  let data = DB.map
-      (fun smry ->
-         let open Summary in
-         let ss = TMap.bindings smry.data in
-         let ss = List.map (fun (_, aggr) -> aggr.Aggr.mean) ss in
-         Statistics.geometric_mean ss, smry.weight
-      )
-      data
-  in
-  let data = SMap.map
-      (fun benchmap ->
-         SMap.fold
-           (fun bench (mean, weight) (prod, sumw) ->
-              prod *. mean, sumw +. weight
-           )
-           benchmap (1.,0.))
-      data
-  in
-  let print_results oc =
-    SMap.iter
-      (fun k v -> Printf.fprintf oc "%s,%f\n" k v)
-    @@
-    SMap.map (fun (prod, sumw) -> prod ** (1. /. sumw)) data
-  in
-  match copts.output with
-  | `None -> print_results stdout
-  | `Stdout -> print_results stdout
-  | `File fn -> Util.File.with_oc_safe print_results fn
 
 open Cmdliner
 
@@ -524,34 +360,122 @@ let time_limit =
   let doc = "Fixed minimun execution time" in
   Arg.(value & opt float 0. & info ["time-limit"] ~doc)
 
-let perf_cmd =
-  let cmd =
-    let doc = "Absolute path of an executable and its arguments. \
-               If arguments are paths, they must also be absolute \
-               (no shell expansion is done). " in
-    Arg.(non_empty & pos_all string [] & info [] ~docv:"<command>" ~doc) in
-  let evts =
-    let doc = "Same as the -e argument of PERF-STAT(1)." in
-    let topic_parser s =
-      try `Ok (Topic.Perf.of_string_exn s)
-      with _ -> `Error (Printf.sprintf "%s is not a valid perf topic" s)
-    in
-    let topic_printer ppf t =
-      Format.pp_print_string ppf (Topic.Perf.to_string t)
-    in
-    let converter = topic_parser, topic_printer in
-    Arg.(value & opt_all converter [Topic.Perf.Cycles] & info ["e"; "event"] ~docv:"perf-events" ~doc) in
-  let doc = "Macrobenchmark using PERF-STAT(1) (Linux only)." in
-  let man = [
-    `S "DESCRIPTION";
-    `P "Wrapper to the PERF-STAT(1) command."] @ help_secs
-  in
-  Term.(pure perf $ copts_t $ cmd $ evts $ time_limit),
-  Term.info "perf" ~doc ~sdocs:copts_sect ~man
-
 let switch =
   let doc = "Look for benchmarks installed in another switch, instead of the current one." in
   Arg.(value & opt (some string) None & info ["s"; "switch"] ~docv:"glob_pat" ~doc)
+
+
+let round =
+  let doc = "Round number" in
+  Arg.(value & opt int 1 & info ["round"] ~doc)
+
+let inline_branch_factor =
+  let doc = "Inline branch factor" in
+  Arg.(value & opt (some float) None & info ["inline-branch-factor"] ~doc)
+
+let inline =
+  let doc = "Inline" in
+  Arg.(value & opt (some int) None & info ["inline"] ~doc)
+
+let inline_toplevel =
+  let doc = "Inline toplevel" in
+  Arg.(value & opt (some int) None & info ["inline-toplevel"] ~doc)
+
+let inline_alloc_cost =
+  let doc = "Inline alloc cost" in
+  Arg.(value & opt (some int) None & info ["inline-alloc-cost"] ~doc)
+
+let inline_branch_cost =
+  let doc = "Inline branch cost" in
+  Arg.(value & opt (some int) None & info ["inline-branch-cost"] ~doc)
+
+let inline_prim_cost =
+  let doc = "Inline prim cost" in
+  Arg.(value & opt (some int) None & info ["inline-prim-cost"] ~doc)
+
+let inline_call_cost =
+  let doc = "Inline call cost" in
+  Arg.(value & opt (some int) None & info ["inline-call-cost"] ~doc)
+
+let inline_indirect_cost =
+  let doc = "Inline indirect cost" in
+  Arg.(value & opt (some int) None & info ["inline-indirect-cost"] ~doc)
+
+let inline_lifting_benefit =
+  let doc = "Inline lifting benefit" in
+  Arg.(value & opt (some int) None & info ["inline-lifting-benefit"] ~doc)
+
+let inline_max_depth =
+  let doc = "Inline max depth" in
+  Arg.(value & opt (some int) None & info ["inline-max-depth"] ~doc)
+
+let unbox_closures =
+  let doc = "Unbox closures" in
+  Arg.(value & opt (some bool) None & info ["unbox_closures"] ~doc)
+
+let unbox_closures_factor =
+  let doc = "Unbox closures_factor" in
+  Arg.(value & opt (some int) None & info ["unbox_closures_factor"] ~doc)
+
+let inline_max_unroll =
+  let doc = "Inline max unroll" in
+  Arg.(value & opt (some int) None & info ["inline max unroll"] ~doc)
+
+let remove_unused_arguments =
+  let doc = "Remove unused arguments" in
+  Arg.(value & opt (some bool) None & info ["remove-unused-arguments"] ~doc)
+
+let make_inlining_args round inline_branch_factor inline inline_toplevel inline_alloc_cost
+      inline_branch_cost inline_prim_cost inline_call_cost inline_indirect_cost
+      inline_lifting_benefit inline_max_depth unbox_closures unbox_closures_factor
+      inline_max_unroll remove_unused_arguments
+  =
+  let rs = string_of_int round in
+  let make_int_arg name v =
+    match v with
+    | None -> ""
+    | Some i -> "-" ^ name ^ " " ^ rs ^ "=" ^ string_of_int i
+  in
+  let make_float_arg name v =
+    match v with
+    | None -> ""
+    | Some i -> "-" ^ name ^ " " ^ rs ^ "=" ^ string_of_float i
+  in
+  let make_bool_arg name v =
+    match v with
+    | Some true -> "-" ^ name
+    | _ -> ""
+  in
+  let optimise_param =
+    match round with
+    | 2 -> "-O2"
+    | 3 -> "-O3"
+    | _ -> ""
+  in
+  let a =
+    optimise_param ::
+    make_float_arg "inline_branch_factor" inline_branch_factor ::
+    make_int_arg "inline" inline ::
+    make_int_arg "inline-toplevel" inline_toplevel ::
+    make_int_arg "inline-alloc-cost" inline_alloc_cost ::
+    make_int_arg "inline-branch-cost" inline_branch_cost ::
+    make_int_arg "inline-prim-cost" inline_prim_cost ::
+    make_int_arg "inline-call-cost" inline_call_cost ::
+    make_int_arg "inline-indirect-cost" inline_indirect_cost ::
+    make_int_arg "inline-lifting-benefit" inline_lifting_benefit ::
+    make_int_arg "inline-max-depth" inline_max_depth ::
+    make_bool_arg "unbox-closures" unbox_closures ::
+    make_int_arg "unbox-closures-factor" unbox_closures_factor ::
+    make_int_arg "inline-max-unroll" inline_max_unroll ::
+    make_bool_arg "remove-unused-arguments" remove_unused_arguments ::
+    []
+  in
+  String.concat " " a
+
+let test = Term.(pure make_inlining_args $ round $ inline_branch_factor $ inline $ inline_toplevel $ inline_alloc_cost $
+                 inline_branch_cost $ inline_prim_cost $ inline_call_cost $ inline_indirect_cost $
+                 inline_lifting_benefit $ inline_max_depth $ unbox_closures $ unbox_closures_factor $
+                 inline_max_unroll $ remove_unused_arguments )
 
 let run_cmd =
   let force =
@@ -566,18 +490,6 @@ let run_cmd =
     let doc = "Fixed execution time." in
     Arg.(value & flag & info ["fixed"] ~doc)
   in
-  let topics =
-    let doc = "Additionnal values measured during the benchmark evaluation" in
-    let topic_parser s =
-      try `Ok (Topic.of_string s)
-      with _ -> `Error (Printf.sprintf "%s is not a valid topic" s)
-    in
-    let topic_printer ppf t =
-      Format.pp_print_string ppf (Topic.to_string t)
-    in
-    let converter = topic_parser, topic_printer in
-    Arg.(value & opt_all converter [] & info ["t"; "topic"] ~docv:"evaluated topics" ~doc)
-  in
   let selector =
     let doc = "If the argument is the path to an existing file, \
                it is taken as a benchmark file (.bench), otherwise \
@@ -591,7 +503,7 @@ let run_cmd =
     `S "DESCRIPTION";
     `P "Run macrobenchmarks from files."] @ help_secs
   in
-  Term.(pure run $ copts_t $ switch $ topics $ selector $ skip $ force $ fixed $ time_limit),
+  Term.(pure run $ copts_t $ switch $ selector $ skip $ force $ fixed $ time_limit),
   Term.info "run" ~doc ~sdocs:copts_sect ~man
 
 
@@ -609,12 +521,6 @@ let list_cmd =
 
 (* Arguments common to summarize, rank. *)
 
-let topics =
-  let doc = "Select the topics to summarize. \
-             This command understand gc stats, \
-             perf events, times... (default: all topics)." in
-  Arg.(value & opt (list string) [] & info ["t"; "topics"] ~docv:"topics" ~doc)
-
 let switches =
   let doc = "compiler switches to select" in
   Arg.(value & opt (list string) [] & info ["s";"switches"] ~docv:"switch name" ~doc)
@@ -626,7 +532,7 @@ let normalize =
 let backend =
   let doc = "Select backend (one of 'sexp','csv','qt','svg')." in
   let enum_f =
-    ["sexp", `Sexp; "csv", `Csv; "qt", `Gnuplot `Qt; "svg", `Gnuplot `Svg]
+    ["sexp", `Sexp; "csv", `Csv; ]
   in
   Arg.(value & opt (enum enum_f) `Sexp & info ["b"; "backend"] ~doc)
 
@@ -650,21 +556,10 @@ let summarize_cmd =
     `S "DESCRIPTION";
     `P "Produce a summary of the result of the desired benchmarks."] @ help_secs
   in
-  Term.(pure summarize $ output_file $ topics
-        $ normalize $ backend $ selector $ force $ switches $ no_normalize),
+  Term.(pure summarize $ output_file $ normalize $ backend $ selector $ force $ switches $ no_normalize),
   Term.info "summarize" ~doc ~man
 
-let rank_cmd =
-  let doc = "Produce an aggregated performance index for the desired compilers." in
-  let man = [
-    `S "DESCRIPTION";
-    `P "Produce an aggregated performance index for the desired compilers."] @ help_secs
-  in
-  Term.(pure rank $ copts_t $ topics $ normalize $ backend $ switches,
-        info "rank" ~doc ~man)
-
-let cmds = [help_cmd; run_cmd; summarize_cmd; rank_cmd;
-            list_cmd; perf_cmd]
+let cmds = [help_cmd; run_cmd; summarize_cmd; list_cmd; ]
 
 let () = match Term.eval_choice ~catch:false default_cmd cmds with
   | `Error _ -> exit 1 | _ -> exit 0

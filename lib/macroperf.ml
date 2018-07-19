@@ -1320,7 +1320,6 @@ module Perf_wrapper = struct
       Sys.(set_signal sigalrm (Signal_handle (fun _ -> ())));
       let process_status =  Unix.close_process_full (p_stdout, p_stdin, p_stderr) in
       let time_end = Oclock.(gettime monotonic) in
-      let _ = List.iter (Printf.printf "stderr %s\n") stderr_lines in
       let gc_lines, perf_lines = split_stderr_gc_perf stderr_lines in
       let gc_topics = data_of_gc_stats gc_lines in
       let perf_topics = data_of_perf_stats perf_lines in
