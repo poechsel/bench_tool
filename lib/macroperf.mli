@@ -371,6 +371,9 @@ module Summary : sig
 
   include Sexpable.S with type t := t
 
+
+  val get_mean : t -> string -> float
+
   val of_result : Result.t -> t
 
   val normalize : t -> t

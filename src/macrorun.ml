@@ -28,10 +28,15 @@ let write_res_copts copts res =
   (* Write the result into stdout, or <file> if specified *)
   (match copts.output with
    | `None -> ()
-   | `Stdout -> Result.output_hum stdout res
+   | `Stdout ->
+     Summary.of_result res  |> Summary.output_hum stdout
+
+     (*Result.output_hum stdout res*)
    | `File fn ->
-       try Result.save_hum fn res
-       with Sys_error _ -> ()
+     try (*Result.save_hum fn res*)
+       Summary.of_result res  |> Summary.save_hum fn
+       with Sys_error m -> Printf.eprintf "%s\n" m
+
          (* Sexplib cannot create temporary file, aborting*)
   );
 
@@ -274,10 +279,11 @@ let help_secs = [
   `S "BUGS"; `P "Report bugs at <http://github.com/OCamlPro/oparf-macro>.";]
 
 let copts batch output_file opamroot ignore_out =
+  let _ = Printf.printf "%%%%%%%%%%5 %s\n" output_file in
   let output =
     if not batch then `None
     else if output_file = "" then `Stdout
-    else `File output_file in
+    else let _ = Printf.printf "Indeed its a file\n" in let _ = flush_all() in `File output_file in
   { output;
     opamroot;
     ignore_out=List.map
@@ -377,6 +383,10 @@ let inline_lifting_benefit =
   let doc = "Inline lifting benefit" in
   Arg.(value & opt (some int) None & info ["inline-lifting-benefit"] ~doc)
 
+let inline_max_specialise =
+  let doc = "Inline max specialise" in
+  Arg.(value & opt (some int) None & info ["inline-max-specialise"] ~doc)
+
 let inline_max_depth =
   let doc = "Inline max depth" in
   Arg.(value & opt (some int) None & info ["inline-max-depth"] ~doc)
@@ -400,7 +410,7 @@ let remove_unused_arguments =
 let make_inlining_args round inline_branch_factor inline inline_toplevel inline_alloc_cost
       inline_branch_cost inline_prim_cost inline_call_cost inline_indirect_cost
       inline_lifting_benefit inline_max_depth unbox_closures unbox_closures_factor
-      inline_max_unroll remove_unused_arguments
+      inline_max_unroll remove_unused_arguments inline_max_specialise
   =
   let rs = string_of_int (round - 1) in
   let make_int_arg name v =
@@ -420,8 +430,8 @@ let make_inlining_args round inline_branch_factor inline inline_toplevel inline_
   in
   let optimise_param =
     match round with
-    | 2 -> "O2"
-    | 3 -> "O3"
+    | 2 -> "O2=1"
+    | 3 -> "O3=1"
     | _ -> ""
   in
   let a =
@@ -436,6 +446,7 @@ let make_inlining_args round inline_branch_factor inline inline_toplevel inline_
     make_int_arg "inline-indirect-cost" inline_indirect_cost ::
     make_int_arg "inline-lifting-benefit" inline_lifting_benefit ::
     make_int_arg "inline-max-depth" inline_max_depth ::
+    make_int_arg "inline-max-specialise" inline_max_depth ::
     make_bool_arg "unbox-closures" unbox_closures ::
     make_int_arg "unbox-closures-factor" unbox_closures_factor ::
     make_int_arg "inline-max-unroll" inline_max_unroll ::
@@ -447,7 +458,7 @@ let make_inlining_args round inline_branch_factor inline inline_toplevel inline_
 let inlining_args = Term.(pure make_inlining_args $ round $ inline_branch_factor $ inline $ inline_toplevel $ inline_alloc_cost $
                  inline_branch_cost $ inline_prim_cost $ inline_call_cost $ inline_indirect_cost $
                  inline_lifting_benefit $ inline_max_depth $ unbox_closures $ unbox_closures_factor $
-                 inline_max_unroll $ remove_unused_arguments )
+                 inline_max_unroll $ remove_unused_arguments $ inline_max_specialise )
 
 let run_cmd =
   let force =
@@ -531,7 +542,34 @@ let summarize_cmd =
   Term.(pure summarize $ output_file $ normalize $ backend $ selector $ force $ switches $ no_normalize),
   Term.info "summarize" ~doc ~man
 
-let cmds = [help_cmd; run_cmd; summarize_cmd; list_cmd; ]
+let objective_function run base =
+  let run =
+    Summary.load_conv_exn run
+  in
+  let base =
+    Summary.load_conv_exn base
+  in
+  let value x =
+    Summary.get_mean run x /. Summary.get_mean base x
+  in
+  let v =
+   value "cycles"
+  in
+  Printf.printf "%f\n" v
+
+let function_cmd =
+  let run =
+    let doc = "Path to the results of the current run." in
+    Arg.(required & opt (some string) None & info ["run"] ~doc)
+  in
+  let base =
+    let doc = "Path to the results of the witness run." in
+    Arg.(required & opt (some string) None & info ["base"] ~doc)
+  in
+  Term.(pure objective_function $ run $ base),
+  Term.info "function"
+
+let cmds = [help_cmd; run_cmd; summarize_cmd; list_cmd; function_cmd ]
 
 let () = match Term.eval_choice ~catch:false default_cmd cmds with
   | `Error _ -> exit 1 | _ -> exit 0

@@ -374,7 +374,7 @@ module Topic = struct
     let of_string_exn  s =
 
       match s with
-      | "cycles" -> let _ = Printf.printf "yes\n" in Cycles
+      | "cycles" -> Cycles
       | "instructions" -> Instructions
       | "cache_references" -> Cache_references
       | "cache_misses" -> Cache_misses
@@ -442,19 +442,18 @@ module Topic = struct
   type t = Topic : 'a * 'a kind -> t
 
   let of_string s =
-    let _ = Printf.printf "=> %s\n" s in
     try Topic (Size.of_string_exn s, Size)
     with Invalid_argument _ ->
     try Topic (Gc.of_string_exn s, Gc)
     with Invalid_argument _ ->
     try
-    let _ = Printf.printf "=> %s\n" s in
       Topic (Perf.of_string_exn s, Perf)
     with _ ->
       (match s with
        | "time_real" -> Topic (Time.Real, Time)
        | "time_sys" -> Topic (Time.Sys, Time)
        | "time_user" -> Topic (Time.User, Time)
+       | "time_compile" -> Topic (Time.Compile, Time)
        | _ -> invalid_arg "Topic.of_string"
       )
 
@@ -882,6 +881,9 @@ module Summary = struct
       error;
     }
 
+  let get_mean s topic =
+    (TMap.find (Topic.of_string topic) s.data).mean
+
   let normalize s =
     { s with data = TMap.map Aggr.normalize s.data }
 
@@ -1254,7 +1256,6 @@ module Process = struct
     in
     let times = List.map float_of_string lines in
     let time = List.fold_left (+.) 0.0 times in
-    let _ = List.iter (Printf.printf "%s\n") lines in
     Topic.(Topic(Topic.Time.Compile, Time), Measure.of_float time) :: []
 
 end
@@ -1268,7 +1269,6 @@ module Perf_wrapper = struct
       | None -> [|"LANG=C"|]
       | Some env -> Array.of_list @@ "LANG=C"::env in
     let cmd_string = String.concat " " cmd in
-    let _ = Printf.printf "\n\n>>>>>>>>>>>> %s\n\n\n" cmd_string in
     let _ = Printf.fprintf stderr "%s\n" cmd_string in
     let p_stdout, p_stdin, p_stderr = Unix.open_process_full cmd_string env in
     try
@@ -1286,8 +1286,6 @@ module Perf_wrapper = struct
     with
     | Unix.Unix_error (Unix.EINTR, _, _) -> `Timeout
     | exn ->
-      let _ =
-        Printf.eprintf "Oupsi erreur %s\n" (Printexc.to_string exn) in
         ignore @@ Unix.close_process_full (p_stdout, p_stdin, p_stderr);
         Execution.error exn
 
@@ -1339,8 +1337,6 @@ module Perf_wrapper = struct
     with
     | Unix.Unix_error (Unix.EINTR, _, _) -> `Timeout
     | exn ->
-      let _ =
-        Printf.eprintf "Oupsi erreur %s\n" (Printexc.to_string exn) in
         ignore @@ Unix.close_process_full (p_stdout, p_stdin, p_stderr);
         Execution.error exn
 
