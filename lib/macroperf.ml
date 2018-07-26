@@ -211,7 +211,7 @@ module Util = struct
     let exe = "OPAMROOT=~/.opam2 ~/.opam/4.07.0/lib/opam-devel/opam"
 
     let call_opam ~opamroot args =
-      let root = Opt.default root opamroot in
+      (*let root = Opt.default root opamroot in*)
       let cmd = String.concat " " (List.map String.escaped (exe::args)) in
       let res, result = Cmd.lines_of_cmd cmd in
       match res with
@@ -1237,7 +1237,6 @@ module Perf_wrapper = struct
     try
       let stdout_lines = Util.File.lines_of_ic p_stdout in
       let build_topics = data_of_build stdout_lines in
-      let stderr_lines = Util.File.lines_of_ic p_stderr in
       (* Setup an alarm that will make Unix.close_process_full raise
          EINTR if its process is not terminated by then *)
       let (_:int) = match timeout with None -> 0 | Some t -> Unix.alarm t in
@@ -1345,7 +1344,7 @@ module Runner = struct
     let env =
       List.map (fun s ->
         try
-          let groups = Re.exec re s in
+          ignore @@ Re.exec re s;
           was_matched := true;
           s ^ "," ^ p
         with Not_found ->

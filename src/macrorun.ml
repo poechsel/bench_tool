@@ -238,7 +238,6 @@ let make_inlining_args round inline_branch_factor inline inline_toplevel inline_
       inline_max_unroll remove_unused_arguments inline_max_specialise
       round_2_multiplier round_3_multiplier
   =
-  let rs = string_of_int (round - 1) in
   let make_int_arg name v =
     match v with
     | None -> ""
