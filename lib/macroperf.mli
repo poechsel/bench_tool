@@ -167,10 +167,21 @@ module SMap : Map.S with type key = string
 module TSet : Set.S with type elt = Topic.t
 module TMap : Map.S with type key = Topic.t
 
+(*
 module Benchmark : sig
+  type t = {
+    name : string;
+    cmd : string list;
+  }
+
+  val get_exec_cmd : t -> string list
+  val get_compile_cmd : t -> string list
+   end*)
+
+module BenchmarkOpam : sig
   type speed = [`Fast | `Slow | `Slower]
 
-  type t = {
+  type t (*= {
     name: string;
     (** Identifier for a benchmark, should be unique amongst
         benchmarks *)
@@ -204,7 +215,7 @@ module Benchmark : sig
     (** Set of quantities to measure *)
     return_value: int;
     (** The expected return value from the bench program (generally 0) *)
-  }
+  }*)
 
   include Sexpable.S with type t := t
 
@@ -233,6 +244,9 @@ module Benchmark : sig
   val save_hum : string -> t -> unit
   val output_hum : out_channel -> t -> unit
 
+  val cmd_exec : t -> string list
+  val name : t -> string
+
   (** Filesystem *)
   val find_installed :
     ?opamroot:string ->
@@ -241,6 +255,21 @@ module Benchmark : sig
   (** [find_installed ?glob switch] is the list of (benchmarks, path)
       installed in switch [switch], that match the glob expression
       [?glob] if it is defined. *)
+end
+
+module Benchmark : sig
+  type sexp_t
+
+  type t
+
+  val load_conv : opamroot:string option -> switch:string option -> string -> t Sexplib.Sexp.Annotated.conv
+  val load_conv_exn : opamroot:string option -> switch:string option -> string -> t
+
+  val cmd_build : opamroot:string option -> switch:string option -> inlining_args:string -> t -> string list
+  val cmd_exec : t -> string list
+
+  val return_value : t -> int
+  val name : t -> string
 end
 
 module Measure : sig
@@ -253,6 +282,7 @@ module Measure : sig
   (** [of string msr_string] is the measure resulting from the
       cast of [msr_string]. *)
 end
+
 
 
 module Execution : sig
@@ -278,7 +308,7 @@ end
 
 module Result : sig
   type t = {
-    bench: Benchmark.t;
+    bench: Benchmark.sexp_t;
     (** The benchmark used to produce this result *)
     context_id: string;
     (** A unique identifier for the context used to produce the
@@ -362,7 +392,6 @@ module Summary : sig
     success: bool;
     name: string;
     context_id: string;
-    weight: float;
     data: Aggr.t TMap.t;
     error: (string * string) option;
     (** stdout, stderr of one failed run, when success = false *)
@@ -371,10 +400,9 @@ module Summary : sig
 
   include Sexpable.S with type t := t
 
+  val of_result : Result.t -> t
 
   val get_mean : t -> string -> float
-
-  val of_result : Result.t -> t
 
   val normalize : t -> t
   val normalize2 : t -> t -> t
@@ -382,8 +410,6 @@ module Summary : sig
       match. *)
 
   (** I/O *)
-
-  val load_from_result : string -> t
 
   val load_conv : string -> t Sexplib.Sexp.Annotated.conv
   val load_conv_exn : string -> t
@@ -397,75 +423,12 @@ module Summary : sig
   (** [fold_dir f acc dn] is like [Util.FS.fold f acc dn] except it
       folds only on regular files that have suffix .summary *)
 
-  val summarize_dir : ?update_only:bool -> string -> unit
-  (** [summarize_dir ?update_only dn] traverse [dn] and create a
-      .summary file for each .result file found. If [?update_only] is
-      set, then a .summary file is created only if needed (i.e. there
-      is none yet or the existing one is out-of-date. *)
-end
-
-module DB : sig
-  (** Database of summaries *)
-
-  type 'a t = ('a SMap.t) SMap.t
-  (** Indexed by benchmark, context_id, topic. *)
-
-  include Sexpable.S1 with type 'a t := 'a t
-  val save_hum : string -> ('a -> Sexplib.Sexp.t) -> 'a t -> unit
-  val output_hum : out_channel -> ('a -> Sexplib.Sexp.t) -> 'a t -> unit
-
-  val empty : 'a t
-
-  (** Generic functions *)
-
-  val add : SMap.key -> SMap.key -> 'a -> 'a t -> 'a t
-  val map : ('a -> 'b) -> 'a t -> 'b t
-  val fold : (SMap.key -> SMap.key -> 'a -> 'b -> 'b) -> 'a t -> 'b -> 'b
-
-  (** Specific functions *)
-
-  val fold_data : (SMap.key -> SMap.key -> TMap.key -> Summary.Aggr.t -> 'b -> 'b) ->
-    Summary.t t -> 'b -> 'b
-
-  val of_dir : ?acc:Summary.t t -> string -> Summary.t t
-  (** [of_dir dn] is the db created from the .summary files found from
-      the traversal of [dn]. *)
-
-end
-
-module DB2 : sig
-  (** Database of summaries, CSV oriented *)
-
-  type 'a t = (('a SMap.t) SMap.t) TMap.t
-  (** Indexed by topic, benchmark, context_id *)
-
-  include Sexpable.S1 with type 'a t := 'a t
-  val save_hum : string -> ('a -> Sexplib.Sexp.t) -> 'a t -> unit
-  val output_hum : out_channel -> ('a -> Sexplib.Sexp.t) -> 'a t -> unit
-
-  val empty : 'a t
-  val add : TMap.key -> SMap.key -> SMap.key -> 'a -> 'a t -> 'a t
-
-  val fold : (TMap.key -> SMap.key -> SMap.key -> 'a -> 'b -> 'b) ->
-    'a SMap.t SMap.t TMap.t -> 'b -> 'b
-
-  val normalize : ?against:[`Ctx of string | `Biggest] -> Summary.Aggr.t t -> Summary.Aggr.t t
-  (** [normalize ~against db] is [db] with aggrs normalized (mean =
-      1.). If [~against] is specified, means are normalized against
-      what is specified by the polymorphic variant. *)
-
-  val to_csv : ?escape_uscore:bool ->
-    ?sep:string -> out_channel -> ?topic:TMap.key -> Summary.Aggr.t t -> int
-  (** The integer returned is the number of ctxs_ids found. *)
 end
 
 
 module Runner : sig
-  val run_exn : ?use_perf:bool -> ?opamroot:string ->
-    ?context_id:string -> inlining_args:string ->
-    modname:string -> interactive:bool -> fixed:bool ->
-    time_limit:float -> Benchmark.t -> Result.t
-
-  val run_check : ?opamroot:string -> interactive:bool -> Result.t -> Result.t
+  val run_exn : opamroot:string option ->
+    switch:string option -> inlining_args:string ->
+    Benchmark.t -> Result.t
 
 end

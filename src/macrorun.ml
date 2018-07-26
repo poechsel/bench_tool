@@ -38,125 +38,17 @@ let write_res_copts copts res =
        with Sys_error m -> Printf.eprintf "%s\n" m
 
          (* Sexplib cannot create temporary file, aborting*)
-  );
+  )
 
-  (* Write the result in cache too if cache exists *)
-  let rex = Re.Pcre.regexp " " in
-  let name = res.Result.bench.Benchmark.name |> String.trim in
-  let name = Re.Pcre.substitute ~rex ~subst:(fun _ -> "_") name in
-  let interactive = copts.output = `None in
+let run inlining_args copts switch bench =
   let opamroot = copts.opamroot in
-  try
-    let res_file =
-      Util.FS.(macro_dir / name / res.Result.context_id ^ ".result") in
-    XDGBaseDir.mkdir_openfile
-      (fun fn ->
-         let filename = Filename.chop_extension fn in
-         let outputname = filename ^ ".output" in
-         Result.save_output outputname res;
-         let res = Runner.run_check ?opamroot ~interactive res in
-         Result.save_hum fn res) res_file
-  with Not_found -> ()
-
-let kind_of_file filename =
-  let open Unix in
-  try
-    let st = Unix.stat filename in
-    match st.st_kind with
-    | S_REG -> `File
-    | S_DIR -> `Directory
-    | _     -> `Other_kind
-  with Unix_error (ENOENT, _, _) -> `Noent
-
-let is_benchmark_file filename =
-  kind_of_file filename = `File &&
-  Filename.check_suffix filename ".bench"
-
-let run inlining_args copts switch selectors skip force fixed time_limit =
-  let opamroot = copts.opamroot in
-  let switch = match switch with
-    | None -> Util.Opam.cur_switch ~opamroot
-    | Some switch -> switch in
-  let switch = try
-      List.hd @@ Util.Opam.switches_matching ?opamroot switch
-    with Failure _ ->
-      Printf.eprintf "Pattern %s do not match any existing switch. Aborting.\n" switch;
-      exit 1
+  let bench =
+    Benchmark.load_conv_exn ~switch ~opamroot bench
   in
-  let interactive = copts.output = `None in
-
-  let already_run switch b =
-    match
-      Result.load_conv @@
-      Util.FS.(macro_dir / b.Benchmark.name / switch ^ ".result")
-    with
-    | `Result _ -> true
-    | _ -> false
-    | exception Sys_error _ -> false
+  let res =
+    Runner.run_exn ~opamroot ~switch ~inlining_args bench
   in
-
-  let files, names = List.partition Sys.file_exists selectors in
-  let files = List.map (fun x -> ("ERROR", x)) files in
-  let selectors = match files, names with
-    | [], [] -> List.map snd @@ Benchmark.find_installed ?opamroot switch
-    | files, [] -> files
-    | _ ->
-        if skip then
-          Benchmark.find_installed ?opamroot ~glob:(`Exclude names) switch
-          |> List.map snd
-          |> List.append files
-        else
-          Benchmark.find_installed ?opamroot ~glob:(`Matching names) switch
-          |> List.map snd
-          |> List.append files
-  in
-  (* If selector is a file, run the benchmark in the file, if it is
-     a directory, run all benchmarks in the directory *)
-  let rec run_inner (modname, selector) =
-    let run_bench filename =
-      let open Benchmark in
-      let b = load_conv_exn filename in
-      let already_run = (already_run switch b && not force) in
-      let already_run = false in
-      let binary_missing =
-        try Util.FS.is_file (List.hd b.cmd) <> Some true
-        with _ -> true in
-      if already_run || binary_missing
-      then
-        (if interactive then
-           let reason = List.fold_left2
-               (fun a b s -> if b then s::a else a) []
-               [already_run; binary_missing]
-               ["already run";
-                Printf.sprintf "No binary at path \"%s\"" (List.hd b.cmd)]
-           in let reason_str = String.concat ", " reason in
-           Printf.printf "Skipping %s (%s)\n" b.name reason_str)
-      else
-        let res =
-          Runner.run_exn ?opamroot ~inlining_args ~use_perf:true ~context_id:switch
-            ~modname ~interactive ~fixed ~time_limit b
-        in
-        write_res_copts copts res
-    in
-    match kind_of_file selector with
-    | `Other_kind ->
-        Printf.eprintf "Warning: %s is not a file nor a directory.\n" selector
-    | `Directory ->
-        (* Get a list of .bench files in the directory and run them *)
-        let benchs = Util.FS.ls selector in
-        if interactive && benchs = [] && selectors <> [] then
-          Printf.printf "No benchmark files (*.bench) found in %s.\n" selector
-        else
-          List.(map (Filename.concat selector) benchs
-                |> filter is_benchmark_file
-                |> iter run_bench)
-    | `File ->
-        List.iter run_bench [selector]
-    | _ -> assert false
-  in
-  if interactive then
-    Printf.printf "Running benchmarks installed in %s...\n" switch;
-  List.iter run_inner selectors
+  write_res_copts copts res
 
 let help man_format cmds topic = match topic with
   | None -> `Help (`Pager, None) (* help about the program. *)
@@ -185,7 +77,7 @@ let list copts switches =
   let print_all switches =
     List.iter (fun s ->
         Printf.printf "# %s\n" s;
-        print @@ Benchmark.find_installed ?opamroot:copts.opamroot s;
+        print @@ BenchmarkOpam.find_installed ?opamroot:copts.opamroot s;
         print_endline ""
       ) switches in
   let switches = match switches with
@@ -194,77 +86,6 @@ let list copts switches =
         StringList.settrip @@
         List.(flatten @@ map Util.Opam.switches_matching s) in
   print_all switches
-
-(* [selectors] are bench _names_ *)
-let summarize output ref_ctx_id pp selectors force ctx_ids no_normalize =
-  (* [selectors] are directories hopefully containing .summary
-     files. *)
-  let selectors = match selectors with
-    | [] -> SSet.of_list @@ Util.FS.[macro_dir; micro_dir]
-    | ss -> List.fold_left
-              (fun a s -> try
-                  if Sys.is_directory s
-                  then SSet.add s a (* selector is a directory, looking for content *)
-                  else a (* selector is a file, do nothing *)
-                with _ ->
-                  (* Not a file nor a dir: benchmark glob expression *)
-                  (try
-                     let macro_benchs =
-                       try Util.FS.(ls ~prefix:true  ~glob:s macro_dir) with _ -> [] in
-                     let micro_benchs =
-                       try Util.FS.(ls ~prefix:true  ~glob:s micro_dir) with _ -> [] in
-                     SSet.union a @@ SSet.of_list (micro_benchs @ macro_benchs)
-                   with Sys_error _ -> a)
-              )
-              SSet.empty ss
-  in
-
-  (* Make sure all .result files have an up-to-date corresponding
-     .summary *)
-  SSet.iter Summary.summarize_dir selectors;
-
-  (* Create the DB *)
-  let data = SSet.fold (fun dn db -> DB.of_dir ~acc:db dn)
-      selectors DB.empty in
-
-  (* Filter on context ids *)
-  let data = match ctx_ids with
-    | [] -> data
-    | ctx_ids ->
-        let res = List.map
-            (fun p -> Re.Glob.globx ~anchored:true p |> Re.compile) ctx_ids in
-        SMap.map
-          (SMap.filter
-             (fun ctx _ ->
-                List.fold_left (fun a re -> Re.execp re ctx || a) false res
-             ))
-          data in
-
-  (* Create the DB2 from DB *)
-  let data = DB.fold_data
-      (fun bench context_id topic measure a ->
-         DB2.add topic bench context_id measure a
-      )
-      data DB2.empty in
-
-  let data =
-    if no_normalize
-    then data
-    else
-      match ref_ctx_id with
-      | "" -> DB2.normalize ~against:`Biggest data
-      | context_id -> DB2.normalize ~against:(`Ctx context_id) data
-  in
-  match pp with
-  | `Sexp ->
-      (match output with
-      | "" -> DB2.output_hum stdout Summary.Aggr.sexp_of_t data
-      | fn -> DB2.save_hum fn Summary.Aggr.sexp_of_t data)
-  | `Csv ->
-      (match output with
-       | "" -> ignore @@ DB2.to_csv stdout data
-       | fn -> Util.File.with_oc_safe (fun oc -> ignore @@ DB2.to_csv oc data) fn)
-  | _ -> failwith "Not implemented"
 
 open Cmdliner
 
@@ -333,10 +154,6 @@ let default_cmd =
   let man = help_secs in
   Term.(ret (pure (fun _ -> `Help (`Pager, None)) $ copts_t)),
   Term.info "macrorun" ~version:"0.1" ~sdocs:copts_sect ~doc ~man
-
-let time_limit =
-  let doc = "Fixed minimun execution time" in
-  Arg.(value & opt float 0. & info ["time-limit"] ~doc)
 
 let switch =
   let doc = "Look for benchmarks installed in another switch, instead of the current one." in
@@ -407,36 +224,48 @@ let remove_unused_arguments =
   let doc = "Remove unused arguments" in
   Arg.(value & opt (some bool) None & info ["remove-unused-arguments"] ~doc)
 
+let round_2_multiplier =
+  let doc = "Multiplier for parameters of round 2" in
+  Arg.(value & opt float 1. & info ["round-2-multiplier"] ~doc)
+
+let round_3_multiplier =
+  let doc = "Multiplier for parameters of round 3" in
+  Arg.(value & opt float 1. & info ["round-3-multiplier"] ~doc)
+
 let make_inlining_args round inline_branch_factor inline inline_toplevel inline_alloc_cost
       inline_branch_cost inline_prim_cost inline_call_cost inline_indirect_cost
       inline_lifting_benefit inline_max_depth unbox_closures unbox_closures_factor
       inline_max_unroll remove_unused_arguments inline_max_specialise
+      round_2_multiplier round_3_multiplier
   =
   let rs = string_of_int (round - 1) in
   let make_int_arg name v =
     match v with
     | None -> ""
-    | Some i -> name ^ "=" ^ rs ^ "=" ^ string_of_int i
+    | Some i ->
+      name ^ "=0=" ^ string_of_int i ^ "," ^
+      name ^ "=1=" ^ string_of_int
+                       (int_of_float @@ round_2_multiplier *. (float_of_int i))
+      ^ "," ^
+      name ^ "=2=" ^ string_of_int
+                       (int_of_float @@ round_3_multiplier *. (float_of_int i))
   in
-  let make_float_arg name v =
+  let make_float_arg_branch name v =
     match v with
     | None -> ""
-    | Some i -> name ^ "=" ^ rs ^ "=" ^ string_of_float i
+    | Some i ->
+      name ^ "=0=" ^ string_of_float i ^ "," ^
+      name ^ "=1=" ^ string_of_float i ^ "," ^
+      name ^ "=2=" ^ string_of_float 0.
   in
   let make_bool_arg name v =
     match v with
     | Some true -> name ^ "=1"
     | _ -> ""
   in
-  let optimise_param =
-    match round with
-    | 2 -> "O2=1"
-    | 3 -> "O3=1"
-    | _ -> ""
-  in
   let a =
-    optimise_param ::
-    make_float_arg "inline_branch_factor" inline_branch_factor ::
+    "O3=1" ::
+    make_float_arg_branch "inline_branch_factor" inline_branch_factor ::
     make_int_arg "inline" inline ::
     make_int_arg "inline-toplevel" inline_toplevel ::
     make_int_arg "inline-alloc-cost" inline_alloc_cost ::
@@ -449,44 +278,31 @@ let make_inlining_args round inline_branch_factor inline inline_toplevel inline_
     make_int_arg "inline-max-specialise" inline_max_depth ::
     make_bool_arg "unbox-closures" unbox_closures ::
     make_int_arg "unbox-closures-factor" unbox_closures_factor ::
-    make_int_arg "inline-max-unroll" inline_max_unroll ::
+    (*make_int_arg "inline-max-unroll" inline_max_unroll ::*)
     make_bool_arg "remove-unused-arguments" remove_unused_arguments ::
     []
   in
   String.concat "," a ^ ",_"
 
-let inlining_args = Term.(pure make_inlining_args $ round $ inline_branch_factor $ inline $ inline_toplevel $ inline_alloc_cost $
-                 inline_branch_cost $ inline_prim_cost $ inline_call_cost $ inline_indirect_cost $
-                 inline_lifting_benefit $ inline_max_depth $ unbox_closures $ unbox_closures_factor $
-                 inline_max_unroll $ remove_unused_arguments $ inline_max_specialise )
+let inlining_args = Term.(pure make_inlining_args $ round $ inline_branch_factor $
+                          inline $ inline_toplevel $ inline_alloc_cost $
+                          inline_branch_cost $ inline_prim_cost $ inline_call_cost $
+                          inline_indirect_cost $ inline_lifting_benefit $
+                          inline_max_depth $ unbox_closures $ unbox_closures_factor $
+                          inline_max_unroll $ remove_unused_arguments $
+                          inline_max_specialise $ round_2_multiplier $ round_3_multiplier)
 
 let run_cmd =
-  let force =
-    let doc = "Force the execution of benchmarks even if \
-               a result file is already present in the file system." in
-    Arg.(value & flag & info ["f"; "force"] ~doc) in
-  let skip =
-    let doc = "Inverse benchmark selection. (only when arguments are package globs)." in
-    Arg.(value & flag & info ["skip"] ~docv:"benchmark list" ~doc)
-  in
-  let fixed =
-    let doc = "Fixed execution time." in
-    Arg.(value & flag & info ["fixed"] ~doc)
-  in
-  let selector =
-    let doc = "If the argument is the path to an existing file, \
-               it is taken as a benchmark file (.bench), otherwise \
-               the argument is treated as an OPAM package shell pattern. \
-               If missing, all OPAM benchmarks installed in \
-               the current switch (or the one specified) are executed." in
-    Arg.(value & pos_all string [] & info [] ~docv:"<file|package_glob>" ~doc)
+  let bench =
+    let doc = "Name of the bench file" in
+    Arg.(value & pos 0 string "" & info [] ~docv:"<file>" ~doc)
   in
   let doc = "Run macrobenchmarks from files." in
   let man = [
     `S "DESCRIPTION";
     `P "Run macrobenchmarks from files."] @ help_secs
   in
-  Term.(pure run $ inlining_args $ copts_t $ switch $ selector $ skip $ force $ fixed $ time_limit),
+  Term.(pure run $ inlining_args $ copts_t $ switch $ bench ),
   Term.info "run" ~doc ~sdocs:copts_sect ~man
 
 
@@ -523,24 +339,6 @@ let no_normalize =
   let doc = "Don't normalize values." in
   Arg.(value & flag & info ["no-normalize"] ~doc)
 
-let summarize_cmd =
-  let force =
-    let doc = "Force rebuilding the summary files." in
-    Arg.(value & flag & info ["f"; "force"] ~doc) in
-  let selector =
-    let doc = "If the argument is the path to an existing file, it is taken \
-               as a .result file, otherwise it is treated as \
-               a shell pattern (glob) matching a benchmark name. \
-               If missing, all results of previously ran benchmarks are used." in
-    Arg.(value & pos_all string [] & info [] ~docv:"<file|benchmark_glob>" ~doc)
-  in
-  let doc = "Produce a summary of the result of the desired benchmarks." in
-  let man = [
-    `S "DESCRIPTION";
-    `P "Produce a summary of the result of the desired benchmarks."] @ help_secs
-  in
-  Term.(pure summarize $ output_file $ normalize $ backend $ selector $ force $ switches $ no_normalize),
-  Term.info "summarize" ~doc ~man
 
 let objective_function run base =
   let run =
@@ -569,7 +367,7 @@ let function_cmd =
   Term.(pure objective_function $ run $ base),
   Term.info "function"
 
-let cmds = [help_cmd; run_cmd; summarize_cmd; list_cmd; function_cmd ]
+let cmds = [help_cmd; run_cmd; list_cmd; function_cmd ]
 
 let () = match Term.eval_choice ~catch:false default_cmd cmds with
   | `Error _ -> exit 1 | _ -> exit 0

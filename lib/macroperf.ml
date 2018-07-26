@@ -236,6 +236,19 @@ module Util = struct
       match call_opam ~opamroot ["var"; "share"; "--switch"; s] with
       | true, [dir] -> dir
       | _ -> failwith "opam var query failed"
+
+    let compiler_path ?opamroot switch =
+      let s =
+        match switch with
+        | None -> []
+        | Some x -> ["--switch"; x]
+      in
+      match call_opam ~opamroot (["var"; "bin"] @ s) with
+      | true, [dir] -> dir
+      | _ -> failwith "opam var query failed"
+
+    let use_compiler_switch ?opamroot switch =
+      "PATH=$PATH:" ^ compiler_path ?opamroot switch
   end
 end
 
@@ -578,6 +591,17 @@ module Measure = struct
     | _ -> invalid_arg "Measure.to_int64"
 end
 
+
+module Bench = struct
+  type opam =
+    {
+      switch : string;
+      bench : string;
+    }
+  type t =
+    | Opam of opam
+end
+
 module Execution = struct
   type process_status = Unix.process_status
 
@@ -627,7 +651,7 @@ module Execution = struct
     | _ -> 0L
 end
 
-module Benchmark = struct
+module BenchmarkOpam = struct
 
   type speed = [`Fast | `Slow | `Slower] [@@deriving sexp]
 
@@ -652,6 +676,9 @@ module Benchmark = struct
       ?(return_value=0) () =
     { name; descr; cmd; cmd_check; file_check; binary; env; speed; timeout;
       weight; discard; topics = TSet.of_list topics; return_value; }
+
+  let cmd_exec t = t.cmd
+  let name t = t.name
 
   let load_conv fn =
     Sexplib.Sexp.load_sexp_conv fn t_of_sexp
@@ -701,11 +728,203 @@ module Benchmark = struct
             if List.(map (fun re -> Re.execp re name) res |> mem true)
             then None else Some (name, bench)
           ) l
+
+  let kind_of_file filename =
+    let open Unix in
+    try
+      let st = Unix.stat filename in
+      match st.st_kind with
+      | S_REG -> `File
+      | S_DIR -> `Directory
+      | _     -> `Other_kind
+    with Unix_error (ENOENT, _, _) -> `Noent
+
+  let is_benchmark_file filename =
+    kind_of_file filename = `File &&
+    Filename.check_suffix filename ".bench"
+
+  let load opamroot switch selectors =
+    let switch = match switch with
+      | None -> Util.Opam.cur_switch ~opamroot
+      | Some switch -> switch in
+    let switch = try
+        List.hd @@ Util.Opam.switches_matching ?opamroot switch
+      with Failure _ ->
+        Printf.eprintf "Pattern %s do not match any existing switch. Aborting.\n" switch;
+        exit 1
+    in
+    let selectors =
+      if Sys.file_exists selectors then
+        ["", selectors]
+      else
+        find_installed ?opamroot ~glob:(`Matching [selectors]) switch
+        |> List.map snd
+    in
+    let rec load_inner previous (modname, selector) =
+      let load_bench previous filename =
+        let b = load_conv_exn filename in
+        let binary_missing =
+          try Util.FS.is_file (List.hd @@ cmd_exec b) <> Some true
+          with _ -> true in
+        if binary_missing
+        then
+          None
+        else begin
+          if previous <> None then begin
+            Printf.eprintf "Several benches match the name. Aborting.\n";
+            exit 1;
+          end;
+          Some (modname, b)
+        end
+
+      in
+      match kind_of_file selector with
+      | `Other_kind ->
+        None
+      | `Directory ->
+        (* Get a list of .bench files in the directory and run them *)
+        let benchs = Util.FS.ls selector in
+        if benchs = [] && selectors <> [] then
+          None
+        else
+          List.(map (Filename.concat selector) benchs
+                |> filter is_benchmark_file
+                |> fold_left load_bench previous)
+      | `File ->
+        load_bench previous selector
+      | _ -> assert false
+    in
+    match List.fold_left load_inner None selectors with
+    | None ->
+      Printf.eprintf "No matching benches. Aborting.\n";
+      exit 1;
+    | Some x -> x
 end
+
+module Benchmark = struct
+  type cmd_custom = {
+    build : string list;
+    exec : string list;
+    return_value : int [@default 1];
+    env : string list option [@default None];
+  } [@@deriving sexp]
+
+  type cmd_sexp_t =
+    | Opam
+    | Custom of cmd_custom
+  [@@deriving sexp]
+
+  type sexp_t = {
+    name : string;
+    iter : int [@default 1];
+    cmd : cmd_sexp_t;
+  } [@@deriving sexp]
+
+  type cmd_t =
+    | Opam of string * BenchmarkOpam.t
+    | Custom of cmd_custom
+
+  type t = {
+    name : string;
+    iter : int;
+    cmd : cmd_t;
+  }
+
+  let env t =
+    match t.cmd with
+    | Opam (_, o) -> o.env
+    | Custom x -> x.env
+
+  let topics t =
+    match t.cmd with
+    | Opam (_, o) -> o.topics
+    | Custom x -> TSet.empty
+
+  let export (t : t) : sexp_t =
+    {
+      name = t.name;
+      iter = t.iter;
+      cmd =
+        match (t.cmd : cmd_t) with
+        | Opam _ -> Opam
+        | Custom x -> Custom x
+    }
+
+
+  let return_value t =
+    match t.cmd with
+    | Opam (_, o) -> o.return_value
+    | Custom({return_value}) -> return_value
+
+  let name t =
+    t.name
+
+  let convert opamroot switch (t : sexp_t) : t =
+    {
+      name = t.name;
+      iter = t.iter;
+      cmd =
+        match (t.cmd : cmd_sexp_t) with
+        | Opam ->
+          let a, b = BenchmarkOpam.load opamroot switch t.name in
+          Opam (a, b)
+        | Custom x -> Custom x
+    }
+
+  let load_conv ~opamroot ~switch fn : t Sexplib.Sexp.Annotated.conv =
+    let r =
+      Sexplib.Sexp.load_sexp_conv fn sexp_t_of_sexp
+    in
+    match r with
+    | `Result r ->
+      `Result (convert opamroot switch r)
+    | `Error x ->
+      `Error x
+
+  let load_conv_exn ~opamroot ~switch fn =
+      Util.File.sexp_of_file_exn fn sexp_t_of_sexp
+      |> convert opamroot switch
+
+  let cmd_build ~opamroot ~switch ~inlining_args t =
+    let params =
+      "OCAMLPARAM=\"timings=1," ^ inlining_args ^ "\""
+    in
+    match t.cmd with
+    | Custom ({build}) ->
+          Util.Opam.use_compiler_switch ?opamroot switch ::
+          params :: build
+    | Opam (modname, _) ->
+      params :: [Util.Opam.exe; "reinstall"; modname; "-vvvvvvv";] @
+      (match switch with None -> [] | Some x ->  ["--switch"; x])
+
+  let cmd_exec t =
+    match t.cmd with
+    | Custom ({exec}) ->
+      exec
+    | Opam (_, o) ->
+      o.cmd
+
+  let get_binary t =
+    match t.cmd with
+    | Opam (_, o) ->
+      begin match o.binary with
+      | Some file -> Some file
+      | None -> match o.cmd with
+        | [] -> None
+        | cmd :: _ -> Some cmd
+      end
+    | Custom x -> match x.exec with
+      | cmd :: _ -> Some cmd
+      | _ -> None
+
+
+end
+
+
 
 module Result = struct
   type t = {
-    bench: Benchmark.t;
+    bench: Benchmark.sexp_t;
     context_id: string;
     execs: Execution.t list;
     size: int option [@default None];
@@ -728,20 +947,12 @@ module Result = struct
              | _ -> None, None, None)
         | _ -> None, None, None
       in
-      match bench.Benchmark.binary with
+      match Benchmark.get_binary bench with
+      | None -> None, None, None
       | Some file -> size file
-      | None -> match bench.Benchmark.cmd with
-        | [] -> None, None, None
-        | cmd :: _ -> size cmd
     in
-    let execs = List.map
-        (fun e -> List.fold_left
-            (fun a ch -> Execution.strip ch a)
-            e bench.Benchmark.discard
-        )
-        execs in
     let check = None in
-    { bench; context_id; execs; size; size_code; size_data; check }
+    { bench = Benchmark.export bench; context_id; execs; size; size_code; size_data; check }
 
   let strip chan t = match chan with
     | `Stdout ->
@@ -829,7 +1040,6 @@ module Summary = struct
     success: bool [@default true];
     name: string;
     context_id: string;
-    weight: float;
     data: Aggr.t TMap.t;
     error: (string * string) option [@default None];
   } [@@deriving sexp]
@@ -837,21 +1047,8 @@ module Summary = struct
   let of_result r =
     let open Execution in
     let open Result in
-    let success, error =
-      let err =
-        List.fold_left (fun acc -> function
-            | `Ok {process_status = Unix.WEXITED code}
-              when code = r.bench.Benchmark.return_value ->
-                acc
-            | `Ok ({Execution.process_status = _} as ex) ->
-                Some ex
-            | _ -> None)
-          None r.execs
-      in
-      match err with
-      | None -> true, None
-      | Some e -> false, Some (e.stdout, e.stderr)
-    in
+    (* TODO better check for errors, as in the original version *)
+    let success, error = true, None in
     let data = List.fold_left
         (fun a e -> match e with | `Ok e -> e.data::a | _ -> a)
         [] r.execs in
@@ -874,9 +1071,8 @@ module Summary = struct
           TMap.add Topic.(Topic(Size.Data,Size)) (Aggr.constant (float size)) data
     in
     { success;
-      name = r.bench.Benchmark.name;
+      name = r.bench.name;
       context_id = r.Result.context_id;
-      weight = r.bench.Benchmark.weight;
       data;
       error;
     }
@@ -892,10 +1088,6 @@ module Summary = struct
          let v2 = TMap.find k s2.data in
          Aggr.normalize2 v v2) s1.data
     }
-
-  let load_from_result fn =
-    let result = Util.File.sexp_of_file_exn fn Result.t_of_sexp in
-    of_result result
 
   let load_conv fn =
     Sexplib.Sexp.load_sexp_conv fn t_of_sexp
@@ -918,176 +1110,6 @@ module Summary = struct
       )
       acc dn
 
-  let summarize_dir ?(update_only=true) dn =
-    let open Unix in
-    let summarize_dir_unsafe () =
-      Util.FS.fold_files
-        (fun _ fn ->
-           if Filename.check_suffix fn ".result" then
-             let summary_fn =
-               Filename.chop_suffix fn ".result" ^ ".summary" in
-             if not
-                 (update_only
-                  && Sys.file_exists summary_fn
-                  && Unix.((stat summary_fn).st_mtime > (stat fn).st_mtime))
-             then
-               let s = load_from_result fn in
-               save_hum summary_fn s
-        )
-        () dn
-    in
-    if Sys.file_exists dn then summarize_dir_unsafe ()
-end
-
-module DB = struct
-  type 'a t = ('a SMap.t) SMap.t [@@deriving sexp]
-  (** Indexed by benchmark, context_id, topic. *)
-
-  let empty = SMap.empty
-
-  let add k1 k2 v t =
-    let map1 = try SMap.find k1 t with Not_found -> SMap.empty in
-    let map1 = SMap.add k2 v map1 in
-    SMap.add k1 map1 t
-
-  let map f t =
-    SMap.map (fun v -> SMap.map (fun v -> f v) v) t
-
-  let fold f t a =
-    SMap.fold (fun k1 v a ->
-        SMap.fold (fun k2 v a ->
-            f k1 k2 v a)
-          v a)
-      t a
-
-  let fold_data f t a =
-    SMap.fold (fun k1 v a ->
-        SMap.fold (fun k2 v a ->
-            TMap.fold (fun k3 v a ->
-                f k1 k2 k3 v a)
-              v.Summary.data a)
-          v a)
-      t a
-
-  let of_dir ?(acc=SMap.empty) dn =
-    let open Summary in
-    let of_dir_unsafe () =
-      fold_dir
-        (fun db fn ->
-           let s = load_conv_exn fn in
-           add s.name s.context_id s db
-        )
-        acc dn
-    in
-    if Sys.file_exists dn then of_dir_unsafe () else acc
-
-  let save_hum fn f s =
-    sexp_of_t f s |> Sexplib.Sexp.save_hum fn
-
-  let output_hum oc f s =
-    sexp_of_t f s |> Sexplib.Sexp.output_hum oc
-end
-
-module DB2 = struct
-  type 'a t = (('a SMap.t) SMap.t) TMap.t [@@deriving sexp]
-  (** Indexed by topic, benchmark, context_id *)
-
-  let empty = TMap.empty
-
-  let add topic bench context_id measure t =
-    let bench_map = try TMap.find topic t with Not_found -> SMap.empty in
-    let cid_map = try SMap.find bench bench_map with Not_found -> SMap.empty in
-    let cid_map = SMap.add context_id measure cid_map in
-    let bench_map = SMap.add bench cid_map bench_map in
-    TMap.add topic bench_map t
-
-  let map f t =
-    TMap.map (fun v -> SMap.map (fun v -> f v) v) t
-
-  let fold f t a =
-    TMap.fold (fun k1 v a ->
-        SMap.fold (fun k2 v a ->
-            SMap.fold (fun k3 v a ->
-                f k1 k2 k3 v a)
-              v a)
-          v a)
-      t a
-
-  let normalize ?against t =
-    let normalize_smap ?against smap =
-      match against with
-      | Some (`Ctx context_id) ->
-          (try
-            let normal_aggr = SMap.find context_id smap in
-            Some (SMap.map (fun a -> Summary.Aggr.normalize2 a normal_aggr) smap)
-          with Not_found -> None)
-      | Some `Biggest ->
-          (
-            let biggest = SMap.fold
-                (fun k v a -> Summary.Aggr.max v a)
-                smap (snd @@ SMap.min_binding smap)
-            in
-            Some (SMap.map (fun a -> Summary.Aggr.normalize2 a biggest) smap)
-          )
-      | None -> Some (SMap.map Summary.Aggr.normalize smap)
-    in
-    TMap.map (fun v -> SMap.filter_map (fun v -> normalize_smap ?against v) v) t
-
-  let context_ids db =
-    fold (fun _ _ ctx _ a -> SSet.add ctx a) db SSet.empty
-
-  let add_missing_ctx db =
-    let ctx_ids = context_ids db in
-    let nb_ctxs = SSet.cardinal ctx_ids in
-    let db = map (fun ctxmap -> SMap.map (fun aggr -> Some aggr) ctxmap) db in
-    map (fun ctxmap ->
-        SSet.fold (fun ctx ctxmap ->
-            SMap.add ctx
-              (try SMap.find ctx ctxmap with Not_found -> None)
-              ctxmap)
-          ctx_ids ctxmap)
-      db, nb_ctxs
-
-  let to_csv ?(escape_uscore=false) ?(sep=",") oc ?topic db =
-    let print_table topic = function db when db = SMap.empty -> () | db ->
-      let min_binding = snd @@ SMap.min_binding db in
-      let context_ids =
-        List.map (fun (ctxid,_) -> ctxid ^ "," ) @@ SMap.bindings min_binding in
-      output_string oc @@ topic ^ sep;
-      output_string oc @@ String.concat sep context_ids ^ "\n";
-      SMap.iter (fun bench ctx_map ->
-          let bench = if escape_uscore
-            then Re.Pcre.(substitute ~rex:(regexp "_") ~subst:(fun _ -> "\\\\_") bench)
-            else bench in
-          output_string oc @@ bench ^ sep;
-          SMap.bindings ctx_map
-          |> List.map (fun (_, sopt) -> match sopt with
-              | None -> ","
-              | Some aggr ->
-                  string_of_float Summary.(aggr.Aggr.mean) ^ "," ^
-                  string_of_float Summary.(aggr.Aggr.stddev)
-            )
-          |> String.concat sep
-          |> output_string oc;
-          output_string oc "\n"
-        ) db
-    in
-    let db, nb_ctxs = add_missing_ctx db in
-    match topic with
-    | None ->
-        TMap.iter (fun t db ->
-            print_table (Topic.to_string t) db;
-            output_string oc "\n") db;
-        nb_ctxs
-    | Some t ->
-        try print_table (Topic.to_string t) (TMap.find t db); nb_ctxs
-        with Not_found -> nb_ctxs
-
-  let save_hum fn f s =
-    sexp_of_t f s |> Sexplib.Sexp.save_hum fn
-
-  let output_hum oc f s =
-    sexp_of_t f s |> Sexplib.Sexp.output_hum oc
 end
 
 module Process = struct
@@ -1116,71 +1138,12 @@ module Process = struct
     confidence = 0.05;
   }
 
-  let run ?(fast=fast) ?(slow=slow) ?(slower=slower) ~fixed ~interactive
-      ~return_value ~time_limit (f : unit -> Execution.t) =
-
-    let run_until ~probability ~confidence (init_acc : Execution.t list) =
-      let rec run_until (nb_iter, (acc : Execution.t list)) =
-        let durations =
-          List.map (fun e -> Execution.duration e |> Int64.to_float) acc in
-        match
-          List.fold_left ( +. ) 0. durations >= min_duration &&
-          Statistics.enough_samples ~probability ~confidence durations
-        with
-        | true ->
-            if interactive then
-              Printf.printf "%d times.\n%!" nb_iter;
-            acc
-        | false ->
-            match f () with
-            | `Ok { Execution.process_status = Unix.WEXITED v } as exec
-              when v = return_value->
-                run_until (succ nb_iter, (exec::acc))
-            | exec ->
-                if interactive then
-                  Printf.printf "%d times.\n%!" nb_iter;
-                exec :: acc
-      in
-      run_until (1, init_acc)
+  let run ~nb_iter (f : unit -> Execution.t) =
+    let rec loop i acc =
+      if i > nb_iter then acc
+        else loop (succ i) (f () :: acc)
     in
-    let tstart = Unix.gettimeofday () in
-    let exec = f () in
-    match exec with
-    | `Ok { Execution.process_status = Unix.WEXITED v } as e
-      when v = return_value ->
-        begin match fixed with
-          | Some n ->
-              let r = ref [] in
-              for i = 0 to n - 1 do
-                r := f () :: !r
-              done;
-              let need_more_runs_to_reach_time_limit () =
-                let time = Unix.gettimeofday () in
-                time < tstart +. time_limit
-              in
-              while need_more_runs_to_reach_time_limit () do
-                r := f () :: !r
-              done;
-              if interactive then
-                Printf.printf "%d times.\n%!" (List.length !r);
-              !r
-          | None ->
-              let duration = Execution.duration e in
-              (match duration with
-               | t when t < fast.max_duration -> (* Fast *)
-                   run_until
-                     ~probability:fast.probability
-                     ~confidence:fast.confidence []
-               | t when t < slow.max_duration -> (* Slow *)
-                   run_until
-                     ~probability:slow.probability
-                     ~confidence:slow.confidence []
-               | t ->                            (* Slower: keep the first execution *)
-                   run_until
-                     ~probability:slower.probability
-                     ~confidence:slower.confidence [exec])
-        end
-    | other -> [other]
+    loop 1 []
 
   let split_stderr_gc_perf stderr_lines =
     List.partition (fun line ->
@@ -1263,8 +1226,8 @@ end
 module Perf_wrapper = struct
   include Process
 
-  let bench_build ?env ?timeout ~inlining_args cmd modname =
-    let cmd = ["OCAMLPARAM=\"timings=1," ^ inlining_args ^ "\""; Util.Opam.exe; "reinstall"; modname; "-vvvvvvvvvvvvvvv" ] in
+  let bench_build ?env ?timeout ~opamroot ~switch ~inlining_args bench  =
+    let cmd = Benchmark.cmd_build ~opamroot ~switch ~inlining_args bench in
     let env = match env with
       | None -> [|"LANG=C"|]
       | Some env -> Array.of_list @@ "LANG=C"::env in
@@ -1289,8 +1252,8 @@ module Perf_wrapper = struct
         ignore @@ Unix.close_process_full (p_stdout, p_stdin, p_stderr);
         Execution.error exn
 
-  let run_once ?env ?timeout ~inlining_args cmd evts modname =
-    let data = bench_build ?env ?timeout ~inlining_args cmd modname in
+  let run_once ?env ?timeout ~inlining_args ~opamroot ~switch bench evts =
+    let data = bench_build ?env ?timeout ~opamroot ~switch ~inlining_args bench in
     match data with
     | `Timeout -> `Timeout
     | `Error exn -> `Error exn
@@ -1300,7 +1263,7 @@ module Perf_wrapper = struct
     let perf_cmdline = match evts with
       | [] -> perf_cmdline
       | _ -> perf_cmdline @ ["-e"; String.concat "," @@ List.map Topic.Perf.to_string evts] in
-    let cmd = perf_cmdline @ cmd in
+    let cmd = perf_cmdline @ (Benchmark.cmd_exec bench) in
     let env = match env with
       | None -> [|"LANG=C"|]
       | Some env -> Array.of_list @@ "LANG=C"::env in
@@ -1340,10 +1303,12 @@ module Perf_wrapper = struct
         ignore @@ Unix.close_process_full (p_stdout, p_stdin, p_stderr);
         Execution.error exn
 
-  let run ?env ?timeout ~inlining_args ~return_value ~time_limit cmd evts modname =
+  let run ?env ?timeout ~inlining_args ~return_value ~opamroot ~switch
+        (bench : Benchmark.t) evts =
     (* if evts = SSet.empty then [] *)
     (* else *)
-    run ~return_value ~time_limit (fun () -> run_once ?env ?timeout ~inlining_args cmd evts modname)
+    run ~nb_iter:bench.iter
+      (fun () -> run_once ?env ?timeout ~inlining_args ~opamroot ~switch bench evts)
 end
 
 
@@ -1374,49 +1339,6 @@ module Runner = struct
         (Printf.eprintf "Command killed with signal %i:\n  %s\n%!" n cmd; false)
     | Unix.WSTOPPED _n -> false
 
-  let run_diff file1 file2 =
-    let prog = "diff" in
-    let args = [| prog; "-q"; file1; file2 |] in
-    run_command ~discard_stdout:true prog args
-
-  let run_file_check ?opamroot ~interactive files res =
-    let open Benchmark in
-    let open Result in
-    let b = res.bench in
-    let comp = Util.Opam.cur_switch ~opamroot in
-    let bench_dir = Filename.concat Util.FS.macro_dir b.name in
-    let output_file = Filename.concat bench_dir (comp ^ ".output") in
-    let files =
-      List.map (fun (file1, file2) ->
-          if file1 = "$OUTPUT$"
-          then (output_file, file2)
-          else if file2  = "$OUTPUT$" then (file1, output_file)
-          else (file1, file2)) files in
-    let checks = List.map (fun (file1, file2) -> run_diff file1 file2) files in
-    let check_res =
-      if List.exists (fun check -> check = false) checks
-      then Some false
-      else Some true in
-    { res with check = check_res }
-
-  let run_check ?opamroot ~interactive res =
-    let open Benchmark in
-    let open Result in
-    let b = res.bench in
-    res
-    (*if b.file_check <> []
-    then run_file_check ?opamroot ~interactive b.file_check res
-    else
-    if b.cmd_check <> [] then
-      let macro_dir = Util.FS.macro_dir in
-      let prog = List.hd b.cmd_check in
-      let args_list = List.map (fun arg ->
-          if arg = "$MACRODIR$" then macro_dir else arg) b.cmd_check in
-      let args = Array.of_list args_list in
-      let check_res = if run_command prog args then (Some true) else (Some false) in
-      { res with check = check_res }
-                  else res*)
-
   let set_ocamlrunparam env p =
     let was_matched = ref false in
     let re = Re.Posix.re "OCAMLRUNPARAM=.*" |> Re.compile in
@@ -1436,21 +1358,8 @@ module Runner = struct
       ("OCAMLRUNPARAM=" ^ p) :: env
 
 
-  let run_exn ?(use_perf=false) ?opamroot ?context_id
-        ~inlining_args ~modname ~interactive ~fixed ~time_limit b =
-    let open Benchmark in
-    let context_id = match context_id with
-      | Some context_id -> context_id
-      | None -> Util.Opam.cur_switch ~opamroot in
-
-    let fixed =
-      if fixed
-      then match b.speed with
-        | `Fast -> Some 30
-        | `Slow -> Some 10
-        | `Slower -> Some 3
-      else None
-    in
+  let run_exn ~opamroot ~switch
+        ~inlining_args b =
 
     (* We run benchmarks in a temporary directory that we create now. *)
     let cwd = Unix.getcwd () in
@@ -1461,7 +1370,7 @@ module Runner = struct
      with Unix_error (EEXIST, _, _) -> ());
     Unix.chdir temp_dir;
 
-    let env = match b.env with
+    let env = match Benchmark.env b with
       | None -> set_ocamlrunparam (Array.to_list @@ Unix.environment ()) "v=0x400"
       | Some e -> set_ocamlrunparam e "v=0x400"
     in
@@ -1476,7 +1385,7 @@ module Runner = struct
            | Topic (t, Perf) -> { a with perf= PerfSet.add t a.perf }
            | Topic (t, Size) -> a
         )
-        b.topics
+        (Benchmark.topics b)
         { time = TimeSet.empty;
           gc = GcSet.empty;
           perf = PerfSet.empty;
@@ -1484,16 +1393,17 @@ module Runner = struct
     in
 
     let run_execs { time; gc; perf; } b =
-      let return_value = b.return_value in
-        Perf_wrapper.(run ~inlining_args ~interactive ~env ~return_value ~time_limit b.cmd perf modname)
+      let return_value = Benchmark.return_value b in
+        Perf_wrapper.(run ~inlining_args ~switch ~opamroot ~env ~return_value b perf )
     in
 
-    if interactive then
-      Printf.printf "Running benchmark %s (compiled with OCaml %s)... %!" b.name context_id;
-    let execs = run_execs execs b ~fixed in
+    let execs = run_execs execs b in
     Unix.chdir cwd;
 
     (* Cleanup temporary directory *)
     Util.FS.rm_r [temp_dir];
-    Result.make ~context_id ~bench:b ~execs ()
+    let switch = match switch with
+      | Some switch -> switch
+      | None -> Util.Opam.cur_switch ~opamroot in
+    Result.make ~context_id:switch ~bench:b ~execs ()
 end
