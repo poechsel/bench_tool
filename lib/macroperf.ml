@@ -248,7 +248,7 @@ module Util = struct
       | _ -> failwith "opam var query failed"
 
     let use_compiler_switch ?opamroot switch =
-      "PATH=$PATH:" ^ compiler_path ?opamroot switch
+      "PATH=" ^ compiler_path ?opamroot switch ^ ":$PATH"
   end
 end
 

@@ -204,7 +204,7 @@ let inline_max_depth =
 
 let unbox_closures =
   let doc = "Unbox closures" in
-  Arg.(value & opt (some bool) None & info ["unbox_closures"] ~doc)
+  Arg.(value & flag & info ["unbox_closures"] ~doc)
 
 let unbox_closures_factor =
   let doc = "Unbox closures_factor" in
@@ -216,7 +216,11 @@ let inline_max_unroll =
 
 let remove_unused_arguments =
   let doc = "Remove unused arguments" in
-  Arg.(value & opt (some bool) None & info ["remove-unused-arguments"] ~doc)
+  Arg.(value & flag & info ["remove-unused-arguments"] ~doc)
+
+let oclassic =
+  let doc = "OClassic mode" in
+  Arg.(value & flag & info ["Oclassic"] ~doc)
 
 let round_2_multiplier =
   let doc = "Multiplier for parameters of round 2" in
@@ -230,7 +234,7 @@ let make_inlining_args round inline_branch_factor inline inline_toplevel inline_
       inline_branch_cost inline_prim_cost inline_call_cost inline_indirect_cost
       inline_lifting_benefit inline_max_depth unbox_closures unbox_closures_factor
       inline_max_unroll remove_unused_arguments inline_max_specialise
-      round_2_multiplier round_3_multiplier
+      round_2_multiplier round_3_multiplier oclassic
   =
   let make_int_arg name v =
     match v with
@@ -253,7 +257,7 @@ let make_inlining_args round inline_branch_factor inline inline_toplevel inline_
   in
   let make_bool_arg name v =
     match v with
-    | Some true -> name ^ "=1"
+    | true -> name ^ "=1"
     | _ -> ""
   in
   let a =
@@ -275,7 +279,8 @@ let make_inlining_args round inline_branch_factor inline inline_toplevel inline_
     make_bool_arg "remove-unused-arguments" remove_unused_arguments ::
     []
   in
-  String.concat "," a ^ ",_"
+  let a = List.filter ((<>) "") a in
+  if oclassic then "Oclassic=1" else String.concat "," a ^ ",_"
 
 let inlining_args = Term.(pure make_inlining_args $ round $ inline_branch_factor $
                           inline $ inline_toplevel $ inline_alloc_cost $
@@ -283,7 +288,8 @@ let inlining_args = Term.(pure make_inlining_args $ round $ inline_branch_factor
                           inline_indirect_cost $ inline_lifting_benefit $
                           inline_max_depth $ unbox_closures $ unbox_closures_factor $
                           inline_max_unroll $ remove_unused_arguments $
-                          inline_max_specialise $ round_2_multiplier $ round_3_multiplier)
+                          inline_max_specialise $ round_2_multiplier $
+                          round_3_multiplier $ oclassic)
 
 let run_cmd =
   let bench =
