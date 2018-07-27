@@ -99,12 +99,10 @@ let help_secs = [
   `P "Use `$(mname) $(i,COMMAND) --help' for help on a single command.";
   `S "BUGS"; `P "Report bugs at <http://github.com/OCamlPro/oparf-macro>.";]
 
-let copts batch output_file opamroot ignore_out =
-  let _ = Printf.printf "%%%%%%%%%%5 %s\n" output_file in
+let copts output_file opamroot ignore_out =
   let output =
-    if not batch then `None
-    else if output_file = "" then `Stdout
-    else let _ = Printf.printf "Indeed its a file\n" in let _ = flush_all() in `File output_file in
+    if output_file = "" then `Stdout
+    else `File output_file in
   { output;
     opamroot;
     ignore_out=List.map
@@ -127,14 +125,10 @@ let copts_t =
     let doc = "Specify the opam root (default: use OPAMROOT environment \
         variable)" in
     Arg.(value & opt (some string) None & info ["opamroot"] ~docv:"<dir>" ~docs ~doc) in
-  let batch =
-    let doc = "Run in batch mode, i.e. print result files to stdout \
-        instead of printing information about progression." in
-    Arg.(value & flag & info ["batch"] ~docs ~doc) in
   let ignore_out =
     let doc = "Discard program output (default: none)." in
     Arg.(value & opt (list string) [] & info ["discard"] ~docv:"<channel>" ~docs ~doc) in
-  Term.(pure copts $ batch $ output_file $ opamroot $ ignore_out)
+  Term.(pure copts $ output_file $ opamroot $ ignore_out)
 
 let help_cmd =
   let topic =

@@ -805,6 +805,7 @@ module Benchmark = struct
   type cmd_custom = {
     build : string list;
     exec : string list;
+    dependency : string list [@default []];
     return_value : int [@default 1];
     env : string list option [@default None];
   } [@@deriving sexp]
@@ -849,6 +850,11 @@ module Benchmark = struct
         | Opam _ -> Opam
         | Custom x -> Custom x
     }
+
+  let dependency_files t =
+    match t.cmd with
+    | Opam _ -> []
+    | Custom x -> x.dependency
 
 
   let return_value t =
@@ -904,7 +910,7 @@ module Benchmark = struct
     | Opam (_, o) ->
       o.cmd
 
-  let get_binary t =
+  let get_binary ?(absolute="") t =
     match t.cmd with
     | Opam (_, o) ->
       begin match o.binary with
@@ -913,8 +919,15 @@ module Benchmark = struct
         | [] -> None
         | cmd :: _ -> Some cmd
       end
-    | Custom x -> match x.exec with
-      | cmd :: _ -> Some cmd
+    | Custom x ->
+      match x.exec with
+      | cmd :: _ ->
+        let cmd =
+          match absolute with
+          | "" -> cmd
+          | a -> a ^ "/" ^ cmd
+        in
+        Some cmd
       | _ -> None
 
 
@@ -933,7 +946,7 @@ module Result = struct
     check: bool option [@default None];
   } [@@deriving sexp]
 
-  let make ~bench ?(context_id="") ~execs () =
+  let make ~bench ?(context_id="") ?(absolute="") ~execs () =
     let size, size_code, size_data =
       let size file =
         match Util.Cmd.lines_of_cmd ("size -Bd "^file) with
@@ -947,7 +960,7 @@ module Result = struct
              | _ -> None, None, None)
         | _ -> None, None, None
       in
-      match Benchmark.get_binary bench with
+      match Benchmark.get_binary ~absolute bench with
       | None -> None, None, None
       | Some file -> size file
     in
@@ -1232,10 +1245,11 @@ module Perf_wrapper = struct
       | None -> [|"LANG=C"|]
       | Some env -> Array.of_list @@ "LANG=C"::env in
     let cmd_string = String.concat " " cmd in
-    let _ = Printf.fprintf stderr "%s\n" cmd_string in
+    Printf.eprintf "building : %s\n%!" cmd_string;
     let p_stdout, p_stdin, p_stderr = Unix.open_process_full cmd_string env in
     try
       let stdout_lines = Util.File.lines_of_ic p_stdout in
+      let stderr_lines = Util.File.lines_of_ic p_stderr in
       let build_topics = data_of_build stdout_lines in
       (* Setup an alarm that will make Unix.close_process_full raise
          EINTR if its process is not terminated by then *)
@@ -1268,7 +1282,7 @@ module Perf_wrapper = struct
       | Some env -> Array.of_list @@ "LANG=C"::env in
     let cmd_string = String.concat " " cmd in
     let time_start = Oclock.(gettime monotonic) in
-    let _ = Printf.fprintf stderr "%s\n" cmd_string in
+    Printf.eprintf "exec : %s\n%!" cmd_string;
     let p_stdout, p_stdin, p_stderr = Unix.open_process_full cmd_string env in
     try
       let stdout_string = Util.File.string_of_ic p_stdout in
@@ -1369,6 +1383,17 @@ module Runner = struct
      with Unix_error (EEXIST, _, _) -> ());
     Unix.chdir temp_dir;
 
+    (* Now copy the dependencies *)
+    List.iter (
+      fun file ->
+        let cmd = "cp -r " ^ cwd ^ "/" ^ file ^ " ." in
+        let p_stdout, p_stdin, p_stderr =
+          Unix.open_process_full cmd [||]
+        in
+        let stderr = Util.File.lines_of_ic p_stderr in
+        List.iter print_endline stderr
+    ) (Benchmark.dependency_files b);
+
     let env = match Benchmark.env b with
       | None -> set_ocamlrunparam (Array.to_list @@ Unix.environment ()) "v=0x400"
       | Some e -> set_ocamlrunparam e "v=0x400"
@@ -1399,10 +1424,15 @@ module Runner = struct
     let execs = run_execs execs b in
     Unix.chdir cwd;
 
-    (* Cleanup temporary directory *)
-    Util.FS.rm_r [temp_dir];
+
+
     let switch = match switch with
       | Some switch -> switch
       | None -> Util.Opam.cur_switch ~opamroot in
-    Result.make ~context_id:switch ~bench:b ~execs ()
+    let r =
+      Result.make ~context_id:switch ~bench:b ~absolute:temp_dir ~execs ()
+    in
+    (* Cleanup temporary directory *)
+    Util.FS.rm_r [temp_dir];
+    r
 end

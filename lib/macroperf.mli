@@ -337,6 +337,7 @@ module Result : sig
   val make :
     bench:Benchmark.t ->
     ?context_id:string ->
+    ?absolute:string ->
     execs:Execution.t list -> unit ->
     t
 
