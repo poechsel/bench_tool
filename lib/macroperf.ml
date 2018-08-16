@@ -872,6 +872,7 @@ module Benchmark = struct
     dependency : string list [@default []];
     return_value : int [@default 1];
     env : string list option [@default None];
+    topics: TSet.t [@default TSet.empty];
   } [@@deriving sexp]
 
   type cmd_sexp_t =
@@ -903,7 +904,7 @@ module Benchmark = struct
   let topics t =
     match t.cmd with
     | Opam (_, o) -> o.topics
-    | Custom x -> TSet.empty
+    | Custom x -> x.topics
 
   let export (t : t) : sexp_t =
     {
@@ -1499,4 +1500,38 @@ module Runner = struct
     (* Cleanup temporary directory *)
     Util.FS.rm_r [temp_dir];
     r
+end
+
+
+module ObjectiveFunction = struct
+  (* Objective functions are of the form topic1^a1 * ... * topicn^an *)
+  type t = (string * float) list [@@deriving sexp]
+
+  let default = ["cycles", 1.0]
+  let evaluate t ~status_quo ~current_run =
+    List.fold_left
+      (fun acc (topic, weight) ->
+         let cost =
+           try
+             Summary.get_mean current_run topic /. Summary.get_mean status_quo topic
+           with Invalid_argument _ ->
+             begin print_endline ("[Error] Invalid topic: " ^ topic); exit 1; end
+              | _ ->
+                begin
+                  print_endline (
+                    "[Error] Topic not found inside one of the summaries: "
+                    ^ topic);
+                  exit 1
+                end
+         in
+         acc *. (cost ** weight)
+      )
+      1.0
+      t
+
+  let load_conv fn =
+    Sexplib.Sexp.load_sexp_conv fn t_of_sexp
+
+  let load_conv_exn fn =
+    Util.File.sexp_of_file_exn fn t_of_sexp
 end

@@ -435,3 +435,14 @@ module Runner : sig
     Benchmark.t -> Result.t
 
 end
+
+module ObjectiveFunction : sig
+  (* Objective functions are of the form topic1^a1 * ... * topicn^an *)
+  type t
+
+  val default : t
+
+  val evaluate : t -> status_quo:Summary.t -> current_run:Summary.t -> float
+  val load_conv : string -> t Sexplib.Sexp.Annotated.conv
+  val load_conv_exn : string -> t
+end

@@ -339,41 +339,78 @@ let no_normalize =
   Arg.(value & flag & info ["no-normalize"] ~doc)
 
 
-let objective_function run base =
-  let run =
-    Summary.load_conv_exn run
+let objective_function f run status_quo =
+  let current_run =
+    try
+      Summary.load_conv_exn run
+    with _ ->
+      print_endline ("[Error] When loading: " ^ run
+                     ^ ". Either this file doesn't exists or it is not a valid summary.");
+      exit 1
   in
-  let base =
-    Summary.load_conv_exn base
+  let status_quo =
+    try
+      Summary.load_conv_exn status_quo
+    with _ ->
+      print_endline ("[Error] When loading: " ^ run
+                     ^ ". Either this file doesn't exists or it is not a valid summary.");
+      exit 1
   in
-  let value x =
-    Summary.get_mean run x /. Summary.get_mean base x
+  let f =
+    match f with
+    | None -> ObjectiveFunction.default
+    | Some f ->
+      begin try
+        ObjectiveFunction.load_conv_exn f
+      with _ ->
+        print_endline (
+          "[Error] When loading: "
+          ^ run
+          ^ ". Either this file doesn't exists or it is not a valid objective function.");
+      exit 1
+        end
   in
-  let v =
-   value "cycles"
-  in
-  Printf.printf "%f\n" v
+  ObjectiveFunction.evaluate f ~current_run ~status_quo
+  |> Printf.printf "%f\n"
 
-let function_cmd =
+let objective_cmd =
+  let f =
+    let doc = "Objective function" in
+    Arg.(value & opt (some string) None & info ["f"; "function"] ~doc)
+  in
   let run =
     let doc = "Path to the results of the current run." in
-    Arg.(required & opt (some string) None & info ["run"] ~doc)
+    Arg.(required & opt (some string) None & info ["r"; "run"] ~doc)
   in
-  let base =
-    let doc = "Path to the results of the witness run." in
-    Arg.(required & opt (some string) None & info ["base"] ~doc)
+  let status_quo =
+    let doc = "Path to the results of the status quo run." in
+    Arg.(required & opt (some string) None & info ["s"; "status-quo"] ~doc)
   in
-  Term.(pure objective_function $ run $ base),
-  Term.info "function"
+  let doc = "Evaluate the objective function." in
+  let man =
+    [`S "DESCRIPTION";
+     `P "Prints the value of the objective function on stdout as a float"] @ help_secs
+  in
+  Term.(pure objective_function $ f $ run $ status_quo),
+  Term.info "objective" ~doc ~sdocs:copts_sect ~man
 
-let list_topics =
+let list_topics _ =
   Topic.display_list ()
 
 let list_topics_cmd =
-  Term.(pure list_topics),
-  Term.info "list-topics"
+  let doc = "List the available topics." in
+  let man =
+    [`S "DESCRIPTION";
+     `P "List the available topics"] @ help_secs
+  in
+  let run =
+    let doc = "" in
+    Arg.(value & opt string "" & info [""] ~doc)
+  in
+  Term.(pure list_topics $ run),
+  Term.info "list-topics" ~doc ~sdocs:copts_sect ~man
 
-let cmds = [help_cmd; run_cmd; list_cmd; function_cmd; list_topics_cmd ]
+let cmds = [help_cmd; run_cmd; list_cmd; objective_cmd; list_topics_cmd ]
 
 let () = match Term.eval_choice ~catch:false default_cmd cmds with
   | `Error _ -> exit 1 | _ -> exit 0
