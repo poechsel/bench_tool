@@ -254,19 +254,19 @@ end
 
 module Topic = struct
   module Time = struct
-    type t = Real | User | Sys | Compile [@@deriving sexp]
-    let of_string = function
-      | "real" -> Real
-      | "user" -> User
-      | "sys" -> Sys
-      | "compile" -> Compile
+    type t = Real | User | Sys | Compile [@@deriving sexp, variants]
+    let of_string_exn = function
+      | "time_real" -> Real
+      | "time_user" -> User
+      | "time_sys" -> Sys
+      | "time_compile" -> Compile
       | _ -> invalid_arg "time_of_string"
 
     let to_string = function
-      | Real -> "real"
-      | User -> "user"
-      | Sys -> "sys"
-      | Compile -> "compile"
+      | Real -> "time_real"
+      | User -> "time_user"
+      | Sys -> "time_sys"
+      | Compile -> "time_compile"
 
     let compare = compare
   end
@@ -290,7 +290,7 @@ module Topic = struct
       | Free_blocks
       | Largest_free
       | Fragments
-    [@@deriving sexp]
+    [@@deriving sexp, variants]
 
     let of_string_exn : string -> t = function
       | "minor_words"       -> Minor_words
@@ -358,7 +358,7 @@ module Topic = struct
       | Alignment_faults
       | Emulation_faults
       | Dummy
-    [@@deriving sexp]
+    [@@deriving sexp, variants]
 
     let to_string = function
       | Cycles -> "cycles"
@@ -421,7 +421,7 @@ module Topic = struct
       | Full
       | Code
       | Data
-    [@@deriving sexp]
+    [@@deriving sexp, variants]
 
     let of_string_exn : string -> t = function
       | "size" -> Full
@@ -459,20 +459,13 @@ module Topic = struct
     with Invalid_argument _ ->
     try Topic (Gc.of_string_exn s, Gc)
     with Invalid_argument _ ->
-    try
-      Topic (Perf.of_string_exn s, Perf)
+    try Topic (Perf.of_string_exn s, Perf)
     with _ ->
-      (match s with
-       | "time_real" -> Topic (Time.Real, Time)
-       | "time_sys" -> Topic (Time.Sys, Time)
-       | "time_user" -> Topic (Time.User, Time)
-       | "time_compile" -> Topic (Time.Compile, Time)
-       | _ -> invalid_arg "Topic.of_string"
-      )
+      Topic (Time.of_string_exn s, Time)
 
   let to_string t =
     match t with
-    | Topic (t, Time) -> "time_" ^ Time.to_string t
+    | Topic (t, Time) -> Time.to_string t
     | Topic (gc, Gc) -> Gc.to_string gc
     | Topic (p, Perf) -> Perf.to_string p
     | Topic (sz, Size) -> Size.to_string sz
@@ -509,6 +502,77 @@ module Topic = struct
     | _, Topic (_, Size) -> 1
     | Topic (_, Gc), _ -> -1
     | _, Topic (_, Gc) -> 1
+
+  let display_list () =
+    let add_meta description string_topic =
+      print_endline @@
+      "  "
+      ^ string_topic
+      ^ (if description <> "" then ":  " ^ description else "")
+    in
+    let add_gc description x =
+      add_meta description (Gc.to_string (x.Variantslib.Variant.constructor))
+    in
+    let add_perf description x =
+      add_meta description (Perf.to_string (x.Variantslib.Variant.constructor))
+    in
+    let add_time description x =
+      add_meta description (Time.to_string (x.Variantslib.Variant.constructor))
+    in
+    let add_size description x =
+      add_meta description (Size.to_string (x.Variantslib.Variant.constructor))
+    in
+    print_endline "GC topics: ";
+    Gc.Variants.iter
+      ~minor_words:(add_gc "")
+      ~major_words:(add_gc "")
+      ~promoted_words:(add_gc "")
+      ~top_heap_words:(add_gc "")
+      ~minor_collections:(add_gc "")
+      ~major_collections:(add_gc "")
+      ~compactions:(add_gc "")
+      ~heap_words:(add_gc "")
+      ~heap_chunks:(add_gc "")
+      ~live_words:(add_gc "")
+      ~live_blocks:(add_gc "")
+      ~free_words:(add_gc "")
+      ~free_blocks:(add_gc "")
+      ~largest_free:(add_gc "")
+      ~fragments:(add_gc "");
+    print_endline "\nPerf topics: ";
+    Perf.Variants.iter
+      ~cycles:(add_perf "")
+      ~instructions:(add_perf "")
+      ~cache_references:(add_perf "")
+      ~cache_misses:(add_perf "")
+      ~branch_instructions:(add_perf "")
+      ~branch_misses:(add_perf "")
+      ~bus_cycles:(add_perf "")
+      ~stalled_cycles_frontend:(add_perf "")
+      ~stalled_cycles_backend:(add_perf "")
+      ~ref_cpu_cycles:(add_perf "")
+      ~cpu_clock:(add_perf "")
+      ~task_clock:(add_perf "")
+      ~page_faults:(add_perf "")
+      ~context_switches:(add_perf "")
+      ~cpu_migrations:(add_perf "")
+      ~page_faults_min:(add_perf "")
+      ~page_faults_maj:(add_perf "")
+      ~alignment_faults:(add_perf "")
+      ~emulation_faults:(add_perf "")
+      ~dummy:(add_perf "");
+    print_endline "\nTime topics: ";
+    Time.Variants.iter
+      ~real:(add_time "")
+      ~user:(add_time "")
+      ~sys:(add_time "")
+      ~compile:(add_time "");
+    print_endline "\nSize topics: ";
+    Size.Variants.iter
+      ~full:(add_size "")
+      ~code:(add_size "")
+      ~data:(add_size "");
+
 end
 
 

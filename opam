@@ -16,5 +16,7 @@ depends: [
   "cmdliner"
   "sexplib"
   "ocaml-xdg-basedir"
+  "ppx_deriving"
+  "ppx_variants_conv"
 ]
 dev-repo: "git://github.com/OCamlPro/operf-macro"

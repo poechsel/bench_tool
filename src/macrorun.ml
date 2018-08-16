@@ -366,7 +366,14 @@ let function_cmd =
   Term.(pure objective_function $ run $ base),
   Term.info "function"
 
-let cmds = [help_cmd; run_cmd; list_cmd; function_cmd ]
+let list_topics =
+  Topic.display_list ()
+
+let list_topics_cmd =
+  Term.(pure list_topics),
+  Term.info "list-topics"
+
+let cmds = [help_cmd; run_cmd; list_cmd; function_cmd; list_topics_cmd ]
 
 let () = match Term.eval_choice ~catch:false default_cmd cmds with
   | `Error _ -> exit 1 | _ -> exit 0

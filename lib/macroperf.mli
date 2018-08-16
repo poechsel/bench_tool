@@ -79,6 +79,7 @@ end
 module Topic : sig
   module Time : sig
     type t = Real | User | Sys | Compile
+    val of_string_exn : string -> t
   end
 
   module Gc : sig
@@ -160,6 +161,7 @@ module Topic : sig
 
   val of_string : string -> t
   val to_string : t -> string
+  val display_list : unit -> unit
 end
 
 module SSet : Set.S with type elt = string

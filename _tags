@@ -6,6 +6,7 @@
 		   package(re.glob), \
            package(sexplib), \
 		   package(ppx_sexp_conv), \
+		   package(ppx_variants_conv), \
 		   package(oclock), \
 		   package(xdg-basedir)
 
@@ -16,5 +17,6 @@
            package(sexplib), \
 		       package(re.glob), \
                        package(ppx_sexp_conv), \
+                       package(ppx_variants_conv), \
 		       package(xdg-basedir), \
 		       package(oclock)
