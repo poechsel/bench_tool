@@ -1,240 +1,140 @@
-# operf-macro
+# Bench_tool
+
+Based on *operf-macro*
 
 ## Introduction
 
-*operf-macro* is a (macro)-benchmarking (i.e. whole program) suite for
-OCaml. It provides a framework to define, run, and measure metrics
-from such programs. Those include the elapsed time, the elapsed cycles
-and OCaml GC stats. The aim of *macro-benchmarks* is to measure the
-performance of the particular compiler that generated it. It can also
-be used to compare different versions of a particular program, or
-to compare the performance of several programs whose functionality is
-equivalent.
+This is a tool made to extract various metrics (compile time, number of cycles, number of allocations, ...)
+from an ocaml benchmark compiled with a set of optimiser parameters for Flambda. These metrics can then be 
+used to evaluate a *objective function*, which in turn will be used to find the optimal parameters according
+to this objective function. 
 
-Contrary to *micro-benchmarks* that are OCaml functions of some
-parameter(s) representing the typical size of the problem (size of an
-array to iterate on, number of iterations of a loop, etc.),
-macro-benchmarks generally do not have parameters. The other
-difference is that, as said above, they are whole OCaml programs as
-opposed to functions.
-
-Eventually, the *operf-macro* framework will serve as an unified
-layer to present results from micro-benchmarks as well. Some tools
-are already available, for instance the `injector` program can import
-inline micro-benchmark results from the Jane Street *Core* library
-into the *operf-macro* framework.
-
-For now, it is however safer to stick with the micro-benchmarking
-tools already available like
-[core_bench](http://github.com/janestreet/core_bench) or
-[operf-micro](http://github.com/OCamlPro/operf-micro). An interesting
-read about the *core_bench* library can be found in the [Jane Street
-OCaml
-blog.](https://blogs.janestreet.com/core_bench-micro-benchmarking-for-ocaml/).
-
-The other important thing to have in mind from the start is that
-*operf-macro* is highly integrated into OPAM:
-
-* macro-benchmarks are OPAM packages
-* compilers are OPAM switches
-
-Although there are means to bypass this design principle, it is probably
-easier to stick to it. Some pointers will be given in the Usage
-section regarding running independent benchmarks. A method will also
-be given to transform any OCaml installation into an OPAM switch.
+A run of the benchmark includes the compilation of the benchmarks with a set of inlining parameters passed
+as argument to `bench_tool` (and then to the ocaml compiler), as well as the execution of the benchmark
+itself.
 
 ## Installation
 
-You need OPAM version 1.2.
+This tool works with **OPAM 2**.
 
-```
-$ opam repo add operf-macro git://github.com/OCamlPro/opam-bench-repo
-$ (optionally) opam install core async async_smtp core_bench
-$ opam install operf-macro all-bench
-```
-
-You can install all, some, or no packages listed in the second
-lines. They are optional dependencies to some benchmarks.
-
-The last line installs `all-bench`, a meta-package that will always
-depend on all the available benchmarks.
+After installing the dependencies, you can use `make` to make and install this tool.
 
 ## Basic usage
-
-The `operf-macro` benchmark will install an executable named
-`macrorun`. This is the single entry-point to the framework and all
-functionality derives from it. It is a CLI program, using
-[cmdliner](http://erratique.ch/software/cmdliner). You can therefore
-easily obtain help on the possible commands directly through it. We
-give here only some tips to begin.
-
-### Listing available benchmarks
-
-```
-$ macrorun list "4.01*"
-```
-
-where `[glob]*` is any number of arguments that will be treated as a
-glob (shell) pattern for a complier version. In this case, all
-installed benchmarks for available compiler switches whose name starts
-by "4.01" will be listed on screen.
 
 ### Running benchmarks
 
 ```
-$ macrorun run
+bench_tool run bench_file [-o output_file]? [-s opam_switch]? [--opamroot opamroot]? 
+                --inline=xx ... --unbox_closures=xxx
 ```
 
-This will run all benchmarks installed in the OPAM switch you are
-currently in, and gather the results in
-`.cache/operf/macro/<benchmark>/`. You can always interrupt the
-program during execution: successfully executed benchmarks' results
-will be saved. Alternatively, you can use either
+This will run the benchmark defined by `bench_file` installed in the OPAM switch you are
+currently in, or `opam_switch` if passed as parameter. The ocaml compiler used is the one
+installed in this switch. The opam used will be the one in `~/.opam` or `opamroot` if passed. 
+If an output file is specified, a summary of the metrics measured will be
+saved in it, otherwise it will be printed to stdout.
+
+You can pass a set of arguments to flambda. The list of parameters is:
+
+--inline, --inline max unroll, --inline-alloc-cost, --inline-branch-cost, --inline-branch-factor,--inline-call-cost, --inline-indirect-cost, --inline-lifting-benefit, --inline-max-depth,--inline-max-speculation_depth, --inline-prim-cost, --inline-toplevel, --Oclassic, --remove-unused-arguments, --round-2-multiplier=VAL (absent=1.), --round-3-multiplier=VAL (absent=1.), --unbox_closures, --unbox_closures_factor=VAL
+
+Every benchmark will be compiled in `O3`. `round-3-multiplier` and `round-2-multiplier` each specifies how much we scale
+the inlining parameters between (reps) round 2 and 3 (resp 1 and 2).
+
+### Evaluating an objective function
+
+To evaluate an objective function use:
 
 ```
-$ macrorun run [bench_names_glob]*
-$ macrorun run --skip [bench_names_glob]*
+bench_tool objective [--function objective_function]? 
+          --run=result_current_run --status-quo=result_status_quo
 ```
 
-to run only a selection of benchmarks. It will include (resp. exclude)
-the selected benchmarks and only those.
+The status_quo is a first run which will used as a witness of the "current" result of the benchmark. It used
+to convert every metrics of over runs to be relative to this one inside the objective function.
 
-### Obtaining results
+`objective_function` is a file containing the description of an objective function (see below). 
+If not provided, the objective function is the number of cycles.
 
-#### Raw data
+### Listing all topics
 
-`macrorun` stores its results in `~/.cache/operf/macro`. Here you will
-find one directory per benchmark, and inside, one `.result` file per
-compiler. Inside the file you will find a *s-expression* that is the
-serialized version of `macrorun`'s `Result` value. This includes mostly
-the individual measurements per execution, such as real time, cycles,
-and so on.
+`bench_tool list-topics` will list all the available topics.
 
-#### Summaries
-
-Use:
+### Exemple of use
 
 ```
-$ macrorun summarize
-```
+# bench_tool run kb_bench -o status_quo
 
-This will print a dump of the database of all `macrorun`'s results, as
-an s-expression, on your screen, but before that, it will create a
-`.summary` file for each `.result` file (see previous section) found
-in `~/.cache/operf/macro`, in the same directory.
+# bench_tool run kb_bench -o run --inline 45 --call-cost 789
 
-#### Result as `.csv` files to feed your favourite plotting program
+# bench_tool objective --status_quo=status_quo --run=run
 
 ```
-$ macrorun summarize -b csv -t <topic> [-s compiler1,...,compilerN] [benchmark1 ... benchmarkN]
+
+
+## Advanced usage
+
+### Topics:
+
+By default we are measuring these topics: time_real, time_compile, size, size_code, size_data, minor_words, major_words, promoted_words, top_heap_words, minor_collections, major_collections, compactions, heap_words, heap_chunks, cycles, instructions, task_clock
+
+### Objective functions
+
+Objective functions are of the form 
+
+```
+(metric1_current_run / metric1_status_quo) ^ weight1 * ... * (metricn_current_run / metricn_status_quo) ^ weightn
 ```
 
-This will print a CSV array of requested benchmarks (or all benchmarks
-if no benchmarks are specified) for the specified switches (or all
-switches if not specified). If you don't specify a topic (`-t`)
-option, the output will contain *n* arrays, one per topic, separated
-by a newline.
+You can define a metric in a file containing a sexp expression of the following type `t`:
 
-#### Visualizing the results
+```ocaml
+type topic = string
+type weight = float
+type t = (topic * weight) list
+```
 
-If you have a recent version of *gnuplot* compiled with its *Qt*
-backend installed, you can replace `csv` by `qt` in the example above
-(you **need** to specify a topic then). This will launch *gnuplot* in
-a window and will display the CSV array as a bar chart. You can use
-the `-o` argument to export the gnuplot `.gnu` file.
 
-## Advanced usage, extending, etc.
 
 ### Writing benchmarks
 
-#### TL;DR;
+You can specify a benchmark using a file containing an sexp of type `yt`:
 
-Use:
+```ocaml
+type custom = {
+  build : string list;
+  exec : string list;
+  dependency : string list [@default []];
+  return_value : int [@default 1];
+  env : string list option [@default None];
+  topics: TSet.t [@default TSet.empty];
+} 
 
-```
-$ macrorun perf /path/to/exe arg1 .. argn --batch
-```
+type cmd =
+  | Opam
+  | Custom of custom
 
-This will perform a benchmark of the program specified in the
-commandline and print the result as an s-expression in stdout. This
-s-expression includes an inner s-expression describing the benchmark
-source, and this is your benchmark description. Write this in a
-`.bench` file.
-
-#### `.bench` file format
-
-Benchmark descriptions must be stored in files with the extension
-`.bench`. The format used is an S-expression matching the internal `Benchmark.t` type:
-
-```
-  type speed = [`Fast | `Slow | `Slower] with sexp
-
-  type t = {
-    name: string;
-    descr: string with default("");
-    cmd: string list;
-    cmd_check: string list with default([]);
-    env: string list option with default(None);
-    speed: speed with default(`Fast);
-    timeout: int with default(600);
-    weight: float with default(1.);
-    discard: [`Stdout | `Stderr] list with default([]);
-    topics: TSet.t with default(TSet.singleton (Topic.(Topic("cycles", Perf))));
-  } with sexp
-```
-
-- `name` is the name of the benchmark, and must be unique.
-- `description` is a free text field.
-
-- `cmd` is a list containing the absolute path of the benchmark
-  executable followed by possible arguments. If arguments are paths,
-  the *must* be absolute paths.
-
-- `cmd_check` is an optional way to run a program to check if the
-  benchmark terminated correctly. The provided string list is the name
-  of such a program and its arguments. It will be runned in a shell
-  (using `Sys.command`) and in the same directory where the benchmark
-  was run, so that the test program can inspect any files produced by
-  the benchmark, if needed.
-
-- `env` is an optional list of environment parameters. If empty, the
-  environment will be the same as the one in effect when `macrorun`
-  was run. It should be of the form `["VAR1=v1";"VAR2=v2"; ...]`
-  similar to the `Unix.execve` function.
-
-- `speed` is a indication about the time of execution of a
-  benchmark. Some benchmarks run faster than others. `Fast` should be
-  used when the execution time is less than 0.1s or so in a typical
-  machine, `Slow` when the execution time is of the order of the
-  second and `Slower` otherwise.
-
-- `timeout` is the maximum running time in seconds. After the timeout
-  expires, a running benchmark is cancelled.
-
-- `weight` is the relative importance of this benchmarks compared to
-  others. The default is `1`, for an average importance. This
-  parameter is used when computing global performance indices for a
-  compiler, including several or all benchmarks.
-
-- `discard` can be specified to indicate to `macrorun` that it should
-  not save the output of the program. Usually, the output of the
-  program is stored in the `.result` files for ulterior examination.
-
-- `topics` is a list of hints for `macrorun` to know which
-  measurements should be done. This field is deprecated and should not
-  be used.
-
-## FAQ
-
-### I want `macrorun` to measure GC stats for my program!
-
-Please add at the end of your benchmark:
+type t = {
+  name : string;
+  iter : int [@default 1];
+  cmd : cmd;
+}
 
 ```
-  try
-    let fn = Sys.getenv "OCAML_GC_STATS" in
-    let oc = open_out fn in
-    Gc.print_stat oc;
-    close_out oc
-  with _ -> ()
+
+- `Opam` which means that the benchmark is a bench defined as explained in *operf-macro* and
+which is installed on opam. The name of the opam benchmark used is `name_of_the_benchmark`.
+- `Custom (...)` represents a custom benchmark.
+Dependency is the list of all files needed to run and build the benchmark, including source files.
+
+
+#### Exemple:
+```
+(name kb)
+(iter 4)
+(cmd (Custom (
+(dependency (kb.ml))
+(build ("ocamlopt kb.ml -o kb"))
+(exec (./kb))
+))))
 ```
