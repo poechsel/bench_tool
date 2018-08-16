@@ -15,13 +15,7 @@ module Sexpable = struct
   end
 end
 
-module SSet = Set.Make(String)
-
 module Opt = struct
-  let run = function
-    | Some v -> v
-    | None -> invalid_arg "Opt.run"
-
   let default d = function
     | Some v -> v
     | None -> d
@@ -31,27 +25,6 @@ module List = struct
   include List
   let filter_map f l =
     List.fold_left (fun a e -> match f e with Some v -> v::a | None -> a) [] l |> List.rev
-end
-
-module StringList = struct
-  let settrip l = SSet.(of_list l |> elements)
-end
-
-module String = struct
-  include String
-  let prefix s s' =
-    length s <= length s' && s = sub s' 0 @@ length s
-
-  let last_n_lines count str =
-    let rec aux acc count i =
-      if count <= 0 || i < 0 then acc else
-        let j = try Some (String.rindex_from str i '\n') with Not_found -> None in
-        match j with
-        | Some j ->
-            aux (String.sub str (j+1) (i - j) :: acc) (count - 1) (j-1)
-        | None -> String.sub str 0 (i + 1) :: acc
-    in
-    aux [] count (String.length str - 1)
 end
 
 module Util = struct
@@ -84,7 +57,7 @@ module Util = struct
         r
       with e -> Unix.closedir dh; raise e
 
-    let rec iter f n =
+    let iter f n =
       let open Unix in
       match (stat n).st_kind with
       | S_DIR -> List.iter f @@ ls ~prefix:true n; f n
@@ -192,13 +165,6 @@ module Util = struct
       with exn ->
         let _ = Unix.close_process_in p_stdout in raise exn
 
-    let with_process_full_safe f cmd_string =
-      let p_stdout, p_stdin = Unix.open_process cmd_string in
-      try
-        let res = f p_stdout p_stdin in Unix.close_process (p_stdout, p_stdin), res
-      with exn ->
-        let _ = Unix.close_process (p_stdout, p_stdin) in raise exn
-
     let lines_of_cmd cmd_string = with_process_in_safe File.lines_of_ic cmd_string
 
     let path_of_exe n =
@@ -208,11 +174,12 @@ module Util = struct
   module Opam = struct
     include FS
     let root = try Unix.getenv "OPAMROOT" with Not_found -> home / ".opam"
-    let exe = "OPAMROOT=~/.opam2 ~/.opam/4.07.0/lib/opam-devel/opam"
+
+    let exe ~opamroot =
+       Opt.default root opamroot / "opam"
 
     let call_opam ~opamroot args =
-      (*let root = Opt.default root opamroot in*)
-      let cmd = String.concat " " (List.map String.escaped (exe::args)) in
+      let cmd = String.concat " " (List.map String.escaped ((exe ~opamroot)::args)) in
       let res, result = Cmd.lines_of_cmd cmd in
       match res with
       | WEXITED code -> (code = 0), result
@@ -575,6 +542,8 @@ module Topic = struct
 
 end
 
+module SSet = Set.Make(String)
+
 
 module TSet = struct
   include Set.Make(Topic)
@@ -586,24 +555,6 @@ module TSet = struct
     elements t |> sexp_of_list Topic.sexp_of_t
 end
 
-module SMap = struct
-  include Map.Make(String)
-
-  let of_list l =
-    List.fold_left (fun a (k,v) -> add k v a) empty l
-
-  let filter_map f t =
-    fold (fun k v a -> match f v with Some r -> add k r a | None -> a) t empty
-
-  let filter_mapi f t =
-    fold (fun k v a -> match f k v with Some r -> add k r a | None -> a) t empty
-
-  type 'a bindings = (string * 'a) list [@@deriving sexp]
-
-  let t_of_sexp sexp_of_elt s = bindings_of_sexp sexp_of_elt s |> of_list
-  let sexp_of_t sexp_of_elt t = sexp_of_bindings sexp_of_elt @@ bindings t
-end
-
 module TMap = struct
   include Map.Make(Topic)
 
@@ -613,12 +564,6 @@ module TMap = struct
   let of_list l =
     List.fold_left (fun a (k,v) -> add k v a) empty l
 
-  let filter_map f t =
-    fold (fun k v a -> match f v with Some r -> add k r a | None -> a) t empty
-
-  let filter_mapi f t =
-    fold (fun k v a -> match f k v with Some r -> add k r a | None -> a) t empty
-
   type 'a bindings = (key * 'a) list [@@deriving sexp]
 
   let t_of_sexp sexp_of_elt s = bindings_of_sexp sexp_of_elt s |> of_list
@@ -627,7 +572,7 @@ module TMap = struct
   let lmerge ts =
     List.fold_left
       (fun a t -> merge
-          (fun k v1 v2 -> match v1, v2 with
+          (fun _ v1 v2 -> match v1, v2 with
              | None, Some v -> Some [v]
              | Some aa, Some v -> Some (v::aa)
              | Some aa, None -> Some aa
@@ -655,16 +600,6 @@ module Measure = struct
     | _ -> invalid_arg "Measure.to_int64"
 end
 
-
-module Bench = struct
-  type opam =
-    {
-      switch : string;
-      bench : string;
-    }
-  type t =
-    | Opam of opam
-end
 
 module Execution = struct
   type process_status = Unix.process_status
@@ -705,9 +640,6 @@ module Execution = struct
     | `Error _, _ -> t
     | `Ok e, `Stdout -> `Ok { e with stdout="" }
     | `Ok e, `Stderr -> `Ok { e with stderr="" }
-
-  let find topic exec =
-    TMap.filter (fun t m -> t = topic) exec.data
 
   let duration = function
     | `Ok e ->
@@ -824,7 +756,7 @@ module BenchmarkOpam = struct
         find_installed ?opamroot ~glob:(`Matching [selectors]) switch
         |> List.map snd
     in
-    let rec load_inner previous (modname, selector) =
+    let load_inner previous (modname, selector) =
       let load_bench previous filename =
         let b = load_conv_exn filename in
         let binary_missing =
@@ -925,7 +857,7 @@ module Benchmark = struct
   let return_value t =
     match t.cmd with
     | Opam (_, o) -> o.return_value
-    | Custom({return_value}) -> return_value
+    | Custom({return_value; _}) -> return_value
 
   let name t =
     t.name
@@ -961,16 +893,16 @@ module Benchmark = struct
       "OCAMLPARAM=\"timings=1," ^ inlining_args ^ "\""
     in
     match t.cmd with
-    | Custom ({build}) ->
+    | Custom ({build; _}) ->
           Util.Opam.use_compiler_switch ?opamroot switch ::
           params :: build
     | Opam (modname, _) ->
-      params :: [Util.Opam.exe; "reinstall"; modname; "-vvvvvvv";] @
+      params :: [Util.Opam.exe ~opamroot; "reinstall"; modname; "-vvvvvvv";] @
       (match switch with None -> [] | Some x ->  ["--switch"; x])
 
   let cmd_exec t =
     match t.cmd with
-    | Custom ({exec}) ->
+    | Custom ({exec; _}) ->
       exec
     | Opam (_, o) ->
       o.cmd
@@ -1192,30 +1124,6 @@ end
 
 module Process = struct
 
-  type speed_characterization = {
-    max_duration: int64;
-    probability: float;
-    confidence: float;
-  }
-
-  let min_duration = 4.e9
-
-  let fast = {
-    max_duration = 100_000_000L;
-    probability = 0.99;
-    confidence = 0.05;
-  }
-  let slow = {
-    max_duration = 1_000_000_000L;
-    probability = 0.99;
-    confidence = 0.05;
-  }
-  let slower = {
-    max_duration = 300_000_000_000L;
-    probability = 0.99;
-    confidence = 0.05;
-  }
-
   let run ~nb_iter (f : unit -> Execution.t) =
     let rec loop i acc =
       if i > nb_iter then acc
@@ -1280,7 +1188,7 @@ module Process = struct
       ) [] lines
 
   let data_of_build lines =
-    let rex_timings = Re.(Posix.re ".?( *)([0-9]\.[0-9]*)s.*" |> compile) in
+    let rex_timings = Re.(Posix.re ".?( *)([0-9]\\.[0-9]*)s.*" |> compile) in
     let lines =
       List.fold_left
         (fun acc line ->
@@ -1314,7 +1222,6 @@ module Perf_wrapper = struct
     let p_stdout, p_stdin, p_stderr = Unix.open_process_full cmd_string env in
     try
       let stdout_lines = Util.File.lines_of_ic p_stdout in
-      let stderr_lines = Util.File.lines_of_ic p_stderr in
       let build_topics = data_of_build stdout_lines in
       (* Setup an alarm that will make Unix.close_process_full raise
          EINTR if its process is not terminated by then *)
@@ -1351,7 +1258,7 @@ module Perf_wrapper = struct
     let p_stdout, p_stdin, p_stderr = Unix.open_process_full cmd_string env in
     try
       let stdout_string = Util.File.string_of_ic p_stdout in
-      Util.File.write_string_to_file "stdout" stdout_string;
+      Util.File.write_string_to_file "stdout" ~fn:stdout_string;
       let stderr_lines = Util.File.lines_of_ic p_stderr in
       (* Setup an alarm that will make Unix.close_process_full raise
          EINTR if its process is not terminated by then *)
@@ -1381,7 +1288,7 @@ module Perf_wrapper = struct
         ignore @@ Unix.close_process_full (p_stdout, p_stdin, p_stderr);
         Execution.error exn
 
-  let run ?env ?timeout ~inlining_args ~return_value ~opamroot ~switch
+  let run ?env ?timeout ~inlining_args ~return_value:_ ~opamroot ~switch
         (bench : Benchmark.t) evts =
     (* if evts = SSet.empty then [] *)
     (* else *)
@@ -1396,26 +1303,6 @@ module Runner = struct
     gc: Topic.GcSet.t;
     perf: Topic.PerfSet.t;
   }
-
-  let make_tmp_file suffix =
-    let name = Filename.temp_file "" suffix in
-    name, Unix.openfile name [Unix.O_WRONLY; Unix.O_CREAT; Unix.O_APPEND] 0o644
-
-  let run_command ?(discard_stdout=false) prog args =
-    let cmd = Array.fold_left (fun acc arg -> acc ^ arg ^ " ") "" args in
-    let fd_stdout =
-      if discard_stdout then snd (make_tmp_file ".out")
-      else Unix.stdout in
-    let pid = Unix.create_process prog args Unix.stdin fd_stdout Unix.stderr in
-    let rpid, status = Unix.waitpid [] pid in
-    assert(rpid = pid);
-    if discard_stdout then Unix.close fd_stdout;
-    match status with
-    | Unix.WEXITED 0 -> true
-    | Unix.WEXITED n -> (Printf.eprintf "Command return code %i:\n  %s\n%!" n cmd; false)
-    | Unix.WSIGNALED n ->
-        (Printf.eprintf "Command killed with signal %i:\n  %s\n%!" n cmd; false)
-    | Unix.WSTOPPED _n -> false
 
   let set_ocamlrunparam env p =
     let was_matched = ref false in
@@ -1452,7 +1339,7 @@ module Runner = struct
     List.iter (
       fun file ->
         let cmd = "cp -r " ^ cwd ^ "/" ^ file ^ " ." in
-        let p_stdout, p_stdin, p_stderr =
+        let _p_stdout, _p_stdin, p_stderr =
           Unix.open_process_full cmd [||]
         in
         let stderr = Util.File.lines_of_ic p_stderr in
@@ -1472,7 +1359,7 @@ module Runner = struct
            | Topic (t, Time) -> { a with time = TimeSet.add t a.time }
            | Topic (t, Gc) -> { a with gc = GcSet.add t a.gc }
            | Topic (t, Perf) -> { a with perf= PerfSet.add t a.perf }
-           | Topic (t, Size) -> a
+           | Topic (_, Size) -> a
         )
         (Benchmark.topics b)
         { time = TimeSet.empty;
@@ -1481,7 +1368,7 @@ module Runner = struct
         }
     in
 
-    let run_execs { time; gc; perf; } b =
+    let run_execs { time=_; gc=_; perf; } b =
       let return_value = Benchmark.return_value b in
         Perf_wrapper.(run ~inlining_args ~switch ~opamroot ~env ~return_value b perf )
     in

@@ -1,3 +1,0 @@
-To visualize results, try:
-
-`macrorun summarize --csv -e time_real > data.csv`

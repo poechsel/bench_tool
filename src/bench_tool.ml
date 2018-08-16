@@ -1,4 +1,4 @@
-open Macroperf
+open Bench_tool_lib
 
 module List = struct
   include List
@@ -59,14 +59,14 @@ let help man_format cmds topic = match topic with
       | `Error e -> `Error (false, e)
       | `Ok t when t = "topics" -> List.iter print_endline topics; `Ok ()
       | `Ok t when List.mem t cmds -> `Help (man_format, Some t)
-      | `Ok t ->
+      | `Ok _ ->
           let page = (topic, 7, "", "", ""), [`S topic; `P "Say something";] in
           `Ok (Cmdliner.Manpage.print man_format Format.std_formatter page)
 
 let list copts switches =
   let print files_names =
       let max_name_len = List.fold_left
-          (fun a (n,fn) ->
+          (fun a (n, _fn) ->
              let len = String.length n in
              if len > a then len else a)
           0 files_names
@@ -154,10 +154,6 @@ let switch =
   Arg.(value & opt (some string) None & info ["s"; "switch"] ~docv:"glob_pat" ~doc)
 
 
-let round =
-  let doc = "Round number" in
-  Arg.(value & opt int 1 & info ["round"] ~doc)
-
 let inline_branch_factor =
   let doc = "Inline branch factor" in
   Arg.(value & opt (some float) None & info ["inline-branch-factor"] ~doc)
@@ -194,9 +190,9 @@ let inline_lifting_benefit =
   let doc = "Inline lifting benefit" in
   Arg.(value & opt (some int) None & info ["inline-lifting-benefit"] ~doc)
 
-let inline_max_specialise =
-  let doc = "Inline max specialise" in
-  Arg.(value & opt (some int) None & info ["inline-max-specialise"] ~doc)
+let inline_max_speculation_depth =
+  let doc = "Inline max speculation depth" in
+  Arg.(value & opt (some int) None & info ["inline-max-speculation_depth"] ~doc)
 
 let inline_max_depth =
   let doc = "Inline max depth" in
@@ -230,10 +226,10 @@ let round_3_multiplier =
   let doc = "Multiplier for parameters of round 3" in
   Arg.(value & opt float 1. & info ["round-3-multiplier"] ~doc)
 
-let make_inlining_args round inline_branch_factor inline inline_toplevel inline_alloc_cost
+let make_inlining_args inline_branch_factor inline inline_toplevel inline_alloc_cost
       inline_branch_cost inline_prim_cost inline_call_cost inline_indirect_cost
       inline_lifting_benefit inline_max_depth unbox_closures unbox_closures_factor
-      inline_max_unroll remove_unused_arguments inline_max_specialise
+      inline_max_unroll remove_unused_arguments inline_max_speculation_depth
       round_2_multiplier round_3_multiplier oclassic
   =
   let make_int_arg name v =
@@ -272,23 +268,23 @@ let make_inlining_args round inline_branch_factor inline inline_toplevel inline_
     make_int_arg "inline-indirect-cost" inline_indirect_cost ::
     make_int_arg "inline-lifting-benefit" inline_lifting_benefit ::
     make_int_arg "inline-max-depth" inline_max_depth ::
-    make_int_arg "inline-max-specialise" inline_max_depth ::
+    make_int_arg "inline-max-speculation-depth" inline_max_speculation_depth ::
     make_bool_arg "unbox-closures" unbox_closures ::
     make_int_arg "unbox-closures-factor" unbox_closures_factor ::
-    (*make_int_arg "inline-max-unroll" inline_max_unroll ::*)
+    make_int_arg "inline-max-unroll" inline_max_unroll ::
     make_bool_arg "remove-unused-arguments" remove_unused_arguments ::
     []
   in
   let a = List.filter ((<>) "") a in
   if oclassic then "Oclassic=1" else String.concat "," a ^ ",_"
 
-let inlining_args = Term.(pure make_inlining_args $ round $ inline_branch_factor $
+let inlining_args = Term.(pure make_inlining_args $ inline_branch_factor $
                           inline $ inline_toplevel $ inline_alloc_cost $
                           inline_branch_cost $ inline_prim_cost $ inline_call_cost $
                           inline_indirect_cost $ inline_lifting_benefit $
                           inline_max_depth $ unbox_closures $ unbox_closures_factor $
                           inline_max_unroll $ remove_unused_arguments $
-                          inline_max_specialise $ round_2_multiplier $
+                          inline_max_speculation_depth $ round_2_multiplier $
                           round_3_multiplier $ oclassic)
 
 let run_cmd =

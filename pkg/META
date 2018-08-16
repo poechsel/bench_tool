@@ -1,8 +1,0 @@
-version = "0.1"
-description = "Macrobenchmark tools"
-requires = "sexplib re.pcre re.glob xdg-basedir"
-archive(byte) = "macroperf.cma"
-archive(byte, plugin) = "macroperf.cma"
-archive(native) = "macroperf.cmxa"
-archive(native, plugin) = "macroperf.cmxs"
-exists_if = "macroperf.cma"

@@ -1,0 +1,23 @@
+opam-version: "1.2"
+name: "bench-tool"
+version: "0.2"
+maintainer: "Pierre Oechsel <pierre.oechsel@gmail.com>"
+authors: "Vincent Bernardoff <vincent.bernardoff@ocamlpro.com>"
+homepage: "http://github.com/poechsel/bench-tool"
+bug-reports: "http://github.com/poechsel/bench-tool/issues"
+license: "GPLv2"
+build: [
+  [ make ]
+]
+depends: [
+  "ocamlfind" {build}
+  "ppx_sexp_conv"
+  "re" {>= "1.3.0"}
+  "cmdliner"
+  "sexplib"
+  "oclock"
+  "ocaml-xdg-basedir"
+  "ppx_deriving"
+  "ppx_variants_conv"
+]
+dev-repo: "git://github.com/poechsel/bench-tool"

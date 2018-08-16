@@ -1,0 +1,10 @@
+(executables
+ (names bench_tool)
+  (libraries cmdliner
+              bench_tool_lib
+              )
+ )
+
+(install
+(section bin)
+(files (bench_tool.exe as bench_tool)))

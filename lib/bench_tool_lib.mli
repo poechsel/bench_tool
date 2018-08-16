@@ -49,7 +49,7 @@ module Util : sig
   end
 
   module Opam : sig
-    val exe : string
+    val exe : opamroot:string option -> string
 
     val (/) : string -> string -> string
     (** Alias to Filename.concat *)
@@ -165,7 +165,6 @@ module Topic : sig
 end
 
 module SSet : Set.S with type elt = string
-module SMap : Map.S with type key = string
 module TSet : Set.S with type elt = Topic.t
 module TMap : Map.S with type key = Topic.t
 

@@ -1,19 +1,24 @@
-PKG=operf-macro
-PREFIX=`opam config var prefix`
-BUILDOPTS=native=true native-dynlink=true
+all: build bench_tool
 
-all: build
+dev:
+	dune build --dev -j16
 
 build:
-	ocaml pkg/build.ml $(BUILDOPTS)
+	dune build
 
-install: build
-	opam-installer --prefix=$(PREFIX) $(PKG).install
-
-uninstall: $(PKG).install
-	opam-installer -u --prefix=$(PREFIX) $(PKG).install
-
-PHONY: clean
+bench_tool:
+	ln -s _build/install/default/bin/$@ ./$@
 
 clean:
-	ocamlbuild -clean
+	dune clean
+
+test:
+	dune runtest
+
+preprocess:
+	dune build @preprocess
+
+promote:
+	dune promote
+
+.PHONY: all build dev clean test promote

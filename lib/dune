@@ -1,0 +1,12 @@
+(library
+ (name bench_tool_lib)
+  (libraries re
+             sexplib
+             ppx_deriving
+             ppx_variants_conv
+             ppx_sexp_conv
+             xdg-basedir
+              oclock
+              )
+  (preprocess (pps ppx_variants_conv ppx_sexp_conv ))
+ )
